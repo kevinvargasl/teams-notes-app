@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+
+profile=release
+case "${1:-}" in
+  --debug) profile=debug; cargo build --locked ;;
+  "") cargo build --locked --release ;;
+  *) printf 'Usage: %s [--debug]\n' "$0" >&2; exit 2 ;;
+esac
+
+target_dir=${CARGO_TARGET_DIR:-target}
+bundle="$target_dir/Reuniones.app"
+mkdir -p "$bundle/Contents/MacOS"
+cp Info.plist "$bundle/Contents/Info.plist"
+cp "$target_dir/$profile/notes-app" "$bundle/Contents/MacOS/notes-app"
+codesign --force --sign - "$bundle"
+printf '%s\n' "$bundle"
