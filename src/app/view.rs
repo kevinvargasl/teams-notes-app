@@ -7,6 +7,7 @@ use gpui_kit::component::{
     dialog::{DialogAction, DialogClose, DialogFooter},
     h_flex,
     input::Input,
+    kbd::Kbd,
     scroll::ScrollableElement,
     select::Select,
     slider::{Slider, SliderValue},
@@ -17,7 +18,7 @@ use gpui_kit::component::{
 use gpui_kit::{
     AppContext, Context, CursorStyle, Div, ElementId, InteractiveElement, IntoElement,
     ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div,
-    prelude::FluentBuilder,
+    prelude::FluentBuilder, rems,
 };
 use uuid::Uuid;
 
@@ -53,7 +54,7 @@ impl Render for MeetingDrag {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected_meeting();
         v_flex()
             .size_full()
@@ -90,7 +91,7 @@ impl Render for Workspace {
                     .min_h_0()
                     .child(self.sidebar(cx))
                     .child(if self.preferences {
-                        self.preferences_view(cx).into_any_element()
+                        self.preferences_view(window, cx).into_any_element()
                     } else if let Some(meeting) = selected {
                         self.detail(meeting, cx).into_any_element()
                     } else {
@@ -337,77 +338,125 @@ impl Workspace {
             )
     }
 
-    fn preferences_view(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn preferences_view(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let dark = cx.theme().mode == ThemeMode::Dark;
-        let settings = v_flex().flex_1().min_w_0().min_h_0().gap_5().p_6()
-            .child(div().text_lg().font_semibold().child("Configuración"))
-            .child(v_flex().gap_2()
-                .child(section("Apariencia"))
-                .child(h_flex().gap_2().children([("Claro", false), ("Oscuro", true)].map(|(name, value)| {
-                    regular_button(name).outline().selected(dark == value)
-                        .when(dark == value, |button| button.bg(cx.theme().transparent).text_color(cx.theme().primary))
+        let provider = self.settings.provider;
+        let installed = provider.is_some_and(|provider| provider.executable().is_some());
+        let ready = installed
+            && match provider {
+                Some(Provider::Codex) => self.codex_signed_in == Some(true),
+                Some(Provider::Claude) => self.claude_signed_in == Some(true),
+                _ => false,
+            };
+        let status = match provider {
+            Some(provider) if !installed => format!("{} · CLI no instalada", provider.name()),
+            Some(provider) if ready => format!("{} · Listo", provider.name()),
+            Some(Provider::Codex) if self.codex_signed_in == Some(false) => {
+                "Inicia sesión en la terminal con codex login.".into()
+            }
+            Some(Provider::Claude) if self.claude_signed_in == Some(false) => {
+                "Inicia sesión en la terminal con claude auth login.".into()
+            }
+            Some(_) => "Usa la sesión iniciada en la terminal.".into(),
+            None => "Elige la herramienta que usas en la terminal.".into(),
+        };
+        let content = v_flex().w_full().max_w(rems(44.)).gap_5()
+            .child(div().text_xl().font_semibold().child("Configuración"))
+            .child(h_flex().gap_4()
+                .child(div().flex_1().child(settings_heading("Apariencia")))
+                .child(h_flex().gap_2().children([
+                    ("Claro", false, "icons/sun.svg"),
+                    ("Oscuro", true, "icons/moon.svg"),
+                ].map(|(name, value, icon)| {
+                    regular_button(name).outline().w_24().px_2()
+                        .icon(Icon::default().path(icon))
+                        .selected(dark == value)
+                        .when(dark == value, |button| button
+                            .bg(cx.theme().transparent).text_color(cx.theme().primary)
+                            .border_color(cx.theme().primary))
                         .label(name)
                         .on_click(cx.listener(move |this, _, window, cx| this.set_theme(value, window, cx)))
                 }))))
-            .child(v_flex().gap_2()
-                .child(section("Resúmenes"))
-                .child("Herramienta de IA")
-                .child(h_flex().gap_2().children([Provider::Codex, Provider::Copilot, Provider::Claude].map(|provider| {
-                    regular_button(provider.name()).outline().selected(self.settings.provider == Some(provider))
-                        .when(self.settings.provider == Some(provider), |button| button.bg(cx.theme().transparent).text_color(cx.theme().primary))
-                        .label(provider.name())
-                        .on_click(cx.listener(move |this, _, window, cx| this.set_provider(provider, window, cx)))
-                })))
-                .child(muted(match self.settings.provider {
-                    Some(Provider::Codex) if Provider::Codex.executable().is_some() && self.codex_signed_in == Some(true) =>
-                        "Codex · Listo".into(),
-                    Some(Provider::Codex) if Provider::Codex.executable().is_some() && self.codex_signed_in == Some(false) =>
-                        "Codex · Inicia sesión con tu cuenta de ChatGPT en la terminal.".into(),
-                    Some(Provider::Claude) if Provider::Claude.executable().is_some() && self.claude_signed_in == Some(true) =>
-                        "Claude Code · Listo".into(),
-                    Some(Provider::Claude) if Provider::Claude.executable().is_some() && self.claude_signed_in == Some(false) =>
-                        "Claude Code · Inicia sesión en la terminal con claude auth login.".into(),
-                    Some(provider) if provider.executable().is_some() =>
-                        format!("{} · CLI instalada. Usa la sesión iniciada en la terminal.", provider.name()),
-                    Some(provider) => format!("{} · CLI no instalada.", provider.name()),
-                    None => "Elige la herramienta que usas en la terminal.".into(),
-                }, cx))
+            .child(settings_group("Inteligencia artificial", cx)
+                .child(v_flex().gap_2()
+                    .child(section("Herramienta de IA"))
+                    .child(h_flex().flex_wrap().gap_2().children([Provider::Codex, Provider::Copilot, Provider::Claude].map(|provider| {
+                        let selected = self.settings.provider == Some(provider);
+                        let logo: &'static [u8] = match provider {
+                            Provider::Codex => include_bytes!("../../assets/brands/openai.svg"),
+                            Provider::Copilot => include_bytes!("../../assets/brands/github-copilot.svg"),
+                            Provider::Claude => include_bytes!("../../assets/brands/claude.svg"),
+                        };
+                        regular_button(provider.name()).outline().flex_1().min_w_32().px_2()
+                            .icon(Icon::default().data(logo))
+                            .selected(selected)
+                            .when(selected, |button| button
+                                .bg(cx.theme().transparent).text_color(cx.theme().primary)
+                                .border_color(cx.theme().primary))
+                            .label(provider.name())
+                            .on_click(cx.listener(move |this, _, window, cx| this.set_provider(provider, window, cx)))
+                    })))
+                    .child(h_flex().gap_2()
+                        .when(ready, |row| row.child(Icon::default().path("icons/check.svg")
+                            .size_3().text_color(cx.theme().muted_foreground)))
+                        .child(muted(status, cx).text_xs())))
                 .when_some(self.model_select.as_ref().zip(self.effort_select.as_ref()), |view, (model, effort)| {
                     view.child(h_flex().items_start().gap_4()
-                        .child(v_flex().flex_1().min_w_0().gap_2().child("Modelo")
-                            .child(Select::new(model).cursor_pointer().w_full().disabled(self.options_loading)))
-                        .child(v_flex().flex_1().min_w_0().gap_2().child("Esfuerzo de razonamiento")
-                            .child(Select::new(effort).cursor_pointer().w_full().disabled(self.options_loading))))
+                        .child(v_flex().flex_1().min_w_0().gap_2().child(section("Modelo"))
+                            .child(Select::new(model).accessibility_label("Modelo")
+                                .cursor_pointer().w_full().disabled(self.options_loading)))
+                        .child(v_flex().flex_1().min_w_0().gap_2().child(section("Esfuerzo"))
+                            .child(Select::new(effort).accessibility_label("Esfuerzo de razonamiento")
+                                .cursor_pointer().w_full().disabled(self.options_loading))))
                 })
-                .when(self.options_loading, |view| view.child(muted("Cargando modelos y niveles de esfuerzo…", cx)))
-                .child(Switch::new("automatic-summary").cursor_pointer()
-                    .label("Generar resúmenes automáticamente")
-                    .checked(self.settings.automatic)
-                    .disabled(self.settings.provider.is_none())
-                    .on_change(cx.listener(|this, enabled, window, cx| this.set_automatic(*enabled, window, cx))))
-                .child(Switch::new("automatic-markers").cursor_pointer()
-                    .label("Generar marcadores automáticamente")
-                    .checked(self.settings.automatic_markers)
-                    .disabled(self.settings.provider.is_none())
-                    .on_change(cx.listener(|this, enabled, window, cx| this.set_automatic_markers(*enabled, window, cx))))
-                .child(muted("El proveedor recibe la transcripción. El audio se queda en tu Mac.", cx)))
-            .child(v_flex().gap_2()
-                .child(section("Transcripción"))
-                .child(muted("Whisper transcribe en español en tu Mac.", cx))
-                .child(self.whisper_settings(cx)))
-            .child(v_flex().gap_2()
-                .child(section("Grabación"))
-                .child(muted("Se usa la entrada predeterminada de macOS. Silenciarte en Teams no detiene la grabación del micrófono.", cx))
-                .child(muted("Añadir marcador durante la grabación · ⌘⇧M", cx)))
-            .child(v_flex().gap_2()
-                .child(section("Archivos"))
-                .child(h_flex().gap_3()
+                .when(self.options_loading, |view| view.child(muted("Cargando modelos y niveles de esfuerzo…", cx).text_xs()))
+                .child(v_flex().gap_1().pt_2()
+                    .child(section("Al terminar una reunión"))
+                    .child(settings_toggle("Resúmenes automáticos", "Decisiones, tareas y preguntas abiertas.",
+                        Switch::new("automatic-summary").cursor_pointer()
+                            .checked(self.settings.automatic)
+                            .disabled(provider.is_none())
+                            .on_change(cx.listener(|this, enabled, window, cx| this.set_automatic(*enabled, window, cx))), cx))
+                    .child(settings_toggle("Marcadores automáticos", "Momentos importantes para volver a escuchar.",
+                        Switch::new("automatic-markers").cursor_pointer()
+                            .checked(self.settings.automatic_markers)
+                            .disabled(provider.is_none())
+                            .on_change(cx.listener(|this, enabled, window, cx| this.set_automatic_markers(*enabled, window, cx))), cx)))
+                .child(muted("El proveedor recibe la transcripción. El audio se queda en tu Mac.", cx).text_xs()))
+            .child(settings_group("Transcripción", cx)
+                .child(h_flex().items_start().flex_wrap().gap_4()
+                    .child(v_flex().flex_1().min_w_0().gap_1()
+                        .child(section("Español · Whisper"))
+                        .child(muted("Se procesa en tu Mac, sin enviar el audio.", cx).text_xs()))
+                    .child(if self.library.model_path().is_file() {
+                        h_flex().gap_2().py_1()
+                            .child(Icon::default().path("icons/check.svg").size_4()
+                                .text_color(cx.theme().muted_foreground))
+                            .child(muted("Modelo instalado", cx)).into_any_element()
+                    } else {
+                        self.whisper_settings(cx).into_any_element()
+                    })))
+            .child(settings_group("Grabación y archivos", cx)
+                .child(v_flex().gap_1()
+                    .child(section("Micrófono"))
+                    .child(muted("Se usa la entrada predeterminada de macOS. Silenciarte en Teams no detiene la grabación de tu voz.", cx).text_xs()))
+                .child(h_flex().gap_4()
+                    .child(div().flex_1().child("Añadir marcador durante la grabación"))
+                    .when_some(Kbd::binding_for_action(&AddMarker, Some("Reuniones"), window), |row, shortcut| row.child(shortcut)))
+                .child(h_flex().flex_wrap().gap_3()
                     .child(regular_button("open-recordings-folder")
                         .icon(Icon::default().path("icons/folder-open.svg"))
                         .label("Abrir en Finder")
                         .on_click(cx.listener(|this, _, _, cx| this.open_recordings_folder(cx))))
-                    .child(muted("Grabaciones y transcripciones guardadas en tu Mac.", cx).flex_1().min_w_0())));
-        settings.id("settings-scroll").overflow_y_scrollbar()
+                    .child(muted("Grabaciones y transcripciones guardadas en tu Mac.", cx)
+                        .flex_1().min_w_0().text_xs())));
+        v_flex()
+            .id("settings-scroll")
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .child(div().w_full().p_6().child(content))
+            .overflow_y_scrollbar()
     }
 
     fn whisper_settings(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -1015,4 +1064,38 @@ fn date_label(secs: u64) -> String {
         date.hour(),
         date.minute()
     )
+}
+
+fn settings_heading(text: &'static str) -> Div {
+    div().text_base().font_semibold().child(text)
+}
+
+fn settings_group(title: &'static str, cx: &Context<Workspace>) -> Div {
+    v_flex()
+        .gap_3()
+        .pt_5()
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .child(settings_heading(title))
+}
+
+fn settings_toggle(
+    title: &'static str,
+    description: &'static str,
+    switch: Switch,
+    cx: &Context<Workspace>,
+) -> Div {
+    h_flex()
+        .items_start()
+        .gap_4()
+        .py_2()
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .child(div().font_medium().child(title))
+                .child(muted(description, cx).text_xs()),
+        )
+        .child(switch.accessibility_label(title).flex_shrink_0())
 }
