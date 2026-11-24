@@ -40,11 +40,11 @@ fn main() -> Result<()> {
         .with_assets(AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            cx.bind_keys([KeyBinding::new(
-                "cmd-shift-m",
-                app::AddMarker,
-                Some("Reuniones"),
-            )]);
+            cx.bind_keys([
+                KeyBinding::new("cmd-shift-m", app::AddMarker, Some("Reuniones")),
+                KeyBinding::new("cmd-alt-up", app::MoveMeetingUp, Some("MeetingRow")),
+                KeyBinding::new("cmd-alt-down", app::MoveMeetingDown, Some("MeetingRow")),
+            ]);
             let bounds = Bounds::centered(None, size(px(1000.), px(720.)), cx);
             let options = WindowOptions {
                 titlebar: Some(TitlebarOptions {

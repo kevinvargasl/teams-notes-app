@@ -61,6 +61,7 @@ pub(crate) struct Settings {
     pub(crate) codex: AgentPreferences,
     pub(crate) copilot: AgentPreferences,
     pub(crate) claude: AgentPreferences,
+    pub(crate) meeting_order: Vec<Uuid>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]

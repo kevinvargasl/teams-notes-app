@@ -24,7 +24,7 @@ use crate::{
     processing,
 };
 
-actions!(reuniones, [AddMarker]);
+actions!(reuniones, [AddMarker, MoveMeetingUp, MoveMeetingDown]);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -141,11 +141,18 @@ impl Workspace {
     pub(crate) fn new(
         library: Library,
         settings: Settings,
-        meetings: Vec<Meeting>,
+        mut meetings: Vec<Meeting>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         theme::apply(settings.dark, window, cx);
+        let ranks: HashMap<_, _> = settings
+            .meeting_order
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (*id, index + 1))
+            .collect();
+        meetings.sort_by_key(|meeting| ranks.get(&meeting.id).copied().unwrap_or(0));
         let selected = meetings.first().map(|meeting| meeting.id);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Buscar reuniones"));
         let search_subscription = cx.subscribe_in(&search, window, |_, _, event, _, cx| {
@@ -245,6 +252,54 @@ impl Workspace {
         self.meetings
             .iter()
             .find(|meeting| Some(meeting.id) == self.selected)
+    }
+
+    fn reorder_meeting(&mut self, dragged: Uuid, target: Uuid, cx: &mut Context<Self>) {
+        if !self.search.read(cx).value().trim().is_empty() {
+            return;
+        }
+        let Some(source) = self
+            .meetings
+            .iter()
+            .position(|meeting| meeting.id == dragged)
+        else {
+            return;
+        };
+        let Some(destination) = self
+            .meetings
+            .iter()
+            .position(|meeting| meeting.id == target)
+        else {
+            return;
+        };
+        if source == destination {
+            return;
+        }
+        let mut order: Vec<_> = self.meetings.iter().map(|meeting| meeting.id).collect();
+        let id = order.remove(source);
+        order.insert(destination, id);
+        let previous = std::mem::replace(&mut self.settings.meeting_order, order);
+        if let Err(error) = self.library.save_settings(&self.settings) {
+            self.settings.meeting_order = previous;
+            self.report(error);
+        } else {
+            let meeting = self.meetings.remove(source);
+            self.meetings.insert(destination, meeting);
+        }
+        cx.notify();
+    }
+
+    fn move_meeting(&mut self, id: Uuid, offset: isize, cx: &mut Context<Self>) {
+        let target = self
+            .meetings
+            .iter()
+            .position(|meeting| meeting.id == id)
+            .and_then(|index| index.checked_add_signed(offset))
+            .and_then(|index| self.meetings.get(index))
+            .map(|meeting| meeting.id);
+        if let Some(target) = target {
+            self.reorder_meeting(id, target, cx);
+        }
     }
 
     fn select(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {

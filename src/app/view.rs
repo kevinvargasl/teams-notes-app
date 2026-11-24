@@ -15,15 +15,42 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    Context, Div, ElementId, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    Styled, Window, div, prelude::FluentBuilder,
+    AppContext, Context, CursorStyle, Div, ElementId, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    prelude::FluentBuilder,
 };
 use uuid::Uuid;
 
-use super::{AddMarker, Edit, PlaybackCommand, Tab, Work, Workspace};
+use super::{
+    AddMarker, Edit, MoveMeetingDown, MoveMeetingUp, PlaybackCommand, Tab, Work, Workspace,
+};
 use crate::library::{Meeting, Provider};
 
 const SEGMENTS_PER_PAGE: usize = 100;
+
+#[derive(Clone)]
+struct MeetingDrag {
+    id: Uuid,
+    title: SharedString,
+}
+
+impl Render for MeetingDrag {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w_48()
+            .px_3()
+            .py_2()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().popover)
+            .text_color(cx.theme().popover_foreground)
+            .border_1()
+            .border_color(cx.theme().border)
+            .text_sm()
+            .truncate()
+            .cursor(CursorStyle::ClosedHand)
+            .child(self.title.clone())
+    }
+}
 
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -162,51 +189,107 @@ impl Workspace {
 
     fn sidebar(&self, cx: &Context<Self>) -> impl IntoElement {
         let query = self.search.read(cx).value().trim().to_lowercase();
-        let mut rows = self
-            .meetings
-            .iter()
-            .filter(|meeting| {
-                query.is_empty()
-                    || meeting.title.to_lowercase().contains(&query)
-                    || meeting.transcript.as_ref().is_some_and(|segments| {
-                        segments
-                            .iter()
-                            .any(|segment| segment.text.to_lowercase().contains(&query))
-                    })
-            })
-            .map(|meeting| {
-                let id = meeting.id;
-                let selected = !self.preferences && self.selected == Some(id);
-                let button = regular_button(SharedString::from(format!("meeting-{id}")))
-                    .w_full()
-                    .ghost()
-                    .selected(selected)
-                    .when(selected, |button| {
-                        button
-                            .bg(cx.theme().transparent)
-                            .text_color(cx.theme().primary)
-                    })
-                    .label(meeting.title.clone())
-                    .tooltip(meeting.title.clone())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select(id, window, cx);
-                        cx.notify();
-                    }));
-                v_flex().gap_1().pb_2().child(button).child(
-                    div().px_2().text_center().child(
-                        muted(
-                            format!(
-                                "{} · {}",
-                                date_label(meeting.created),
-                                timestamp(meeting.duration_ms)
-                            ),
-                            cx,
-                        )
-                        .text_xs(),
-                    ),
-                )
-            })
-            .peekable();
+        let mut rows =
+            self.meetings
+                .iter()
+                .filter(|meeting| {
+                    query.is_empty()
+                        || meeting.title.to_lowercase().contains(&query)
+                        || meeting.transcript.as_ref().is_some_and(|segments| {
+                            segments
+                                .iter()
+                                .any(|segment| segment.text.to_lowercase().contains(&query))
+                        })
+                })
+                .enumerate()
+                .map(|(index, meeting)| {
+                    let id = meeting.id;
+                    let selected = !self.preferences && self.selected == Some(id);
+                    let button =
+                        regular_button(SharedString::from(format!("meeting-{id}")))
+                            .w_full()
+                            .h_auto()
+                            .px_2()
+                            .py_0()
+                            .pb_2()
+                            .ghost()
+                            .selected(selected)
+                            .when(selected, |button| {
+                                button
+                                    .bg(cx.theme().transparent)
+                                    .text_color(cx.theme().primary)
+                            })
+                            .accessibility_label(meeting.title.clone())
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .min_w_0()
+                                    .gap_0()
+                                    .text_center()
+                                    .child(h_flex().h_7().justify_center().child(
+                                        div().min_w_0().truncate().child(meeting.title.clone()),
+                                    ))
+                                    .child(
+                                        muted(
+                                            format!(
+                                                "{} · {}",
+                                                date_label(meeting.created),
+                                                timestamp(meeting.duration_ms)
+                                            ),
+                                            cx,
+                                        )
+                                        .text_xs(),
+                                    ),
+                            )
+                            .tooltip(meeting.title.clone())
+                            .when(query.is_empty(), |button| {
+                                button.drag_over::<MeetingDrag>(|style, _, _, cx| {
+                                    style.bg(cx.theme().muted)
+                                })
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select(id, window, cx);
+                                cx.notify();
+                            }));
+                    v_flex()
+                        .id(SharedString::from(format!("meeting-row-{id}")))
+                        .key_context("MeetingRow")
+                        .on_action(cx.listener(move |this, _: &MoveMeetingUp, _, cx| {
+                            this.move_meeting(id, -1, cx)
+                        }))
+                        .on_action(cx.listener(move |this, _: &MoveMeetingDown, _, cx| {
+                            this.move_meeting(id, 1, cx)
+                        }))
+                        .gap_0()
+                        .py_1()
+                        .when(index > 0, |row| {
+                            row.border_t_1().border_color(cx.theme().border)
+                        })
+                        .child(button)
+                        .when(query.is_empty(), |row| {
+                            row.on_drag(
+                                MeetingDrag {
+                                    id,
+                                    title: meeting.title.clone().into(),
+                                },
+                                |drag, _, window, cx| {
+                                    window.defer(cx, |window, cx| {
+                                        cx.set_active_drag_cursor_style(
+                                            CursorStyle::ClosedHand,
+                                            window,
+                                        );
+                                    });
+                                    cx.new(|_| drag.clone())
+                                },
+                            )
+                            .on_drop(cx.listener(
+                                move |this, drag: &MeetingDrag, _, cx| {
+                                    this.reorder_meeting(drag.id, id, cx);
+                                },
+                            ))
+                        })
+                })
+                .peekable();
         let empty_message = if self.meetings.is_empty() {
             "Todavía no hay reuniones."
         } else {
@@ -375,6 +458,7 @@ impl Workspace {
                                             "Renombrar…",
                                         )
                                         .ghost()
+                                        .text_color(cx.theme().muted_foreground)
                                         .flex_shrink_0()
                                         .on_click(
                                             cx.listener(move |this, _, window, cx| {
@@ -771,14 +855,21 @@ impl Workspace {
                 h_flex()
                     .gap_2()
                     .child(self.jump(id, format!("marker-{marker_id}"), marker.ms, cx))
-                    .child(div().min_w_0().flex_1().child(label.clone()))
+                    .child(div().min_w_0().truncate().child(label.clone()))
                     .child(
-                        compact_button(SharedString::from(format!("edit-{marker_id}")))
-                            .ghost()
-                            .label("Renombrar…")
-                            .on_click(cx.listener(move |this, _, window, cx| {
+                        icon_button(
+                            SharedString::from(format!("edit-{marker_id}")),
+                            "icons/pencil.svg",
+                            "Renombrar marcador…",
+                        )
+                        .ghost()
+                        .text_color(cx.theme().muted_foreground)
+                        .flex_shrink_0()
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
                                 this.edit(Edit::Marker(id, marker_id), label.clone(), window, cx)
-                            })),
+                            },
+                        )),
                     )
             }))
             .overflow_y_scrollbar()
@@ -838,7 +929,7 @@ fn compact_button(id: impl Into<ElementId>) -> Button {
         .font_medium()
 }
 
-fn icon_button(id: &'static str, icon: &'static str, label: &'static str) -> Button {
+fn icon_button(id: impl Into<ElementId>, icon: &'static str, label: &'static str) -> Button {
     Button::new(id)
         .cursor_pointer()
         .small()
@@ -875,9 +966,11 @@ fn date_label(secs: u64) -> String {
     let offset = time::UtcOffset::local_offset_at(date).unwrap_or(time::UtcOffset::UTC);
     let date = date.to_offset(offset);
     format!(
-        "{:02}/{:02}/{}",
+        "{:02}/{:02}/{} {:02}:{:02}",
         date.day(),
         u8::from(date.month()),
-        date.year()
+        date.year(),
+        date.hour(),
+        date.minute()
     )
 }
