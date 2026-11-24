@@ -6,7 +6,8 @@ use std::{collections::HashMap, time::Duration};
 use anyhow::{Context as _, Result, ensure};
 use gpui_kit::component::{
     IndexPath, WindowExt,
-    button::ButtonVariant,
+    button::{Button, ButtonVariant, ButtonVariants},
+    dialog::{DialogAction, DialogClose, DialogFooter},
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
     slider::{SliderEvent, SliderState, SliderValue},
@@ -75,6 +76,12 @@ impl Work {
 enum Edit {
     Meeting(Uuid),
     Marker(Uuid, Uuid),
+}
+
+#[derive(Clone, Copy)]
+enum PromptKind {
+    Summary,
+    Markers,
 }
 
 #[derive(Clone)]
@@ -580,10 +587,10 @@ impl Workspace {
         self.jobs.insert(id, Work::Summarizing);
         self.errors.remove(&id);
         let preferences = self.settings.agent(provider).clone();
-        let task =
-            cx.background_spawn(
-                async move { processing::summarize(provider, &preferences, &segments) },
-            );
+        let prompt = self.settings.summary_prompt.clone();
+        let task = cx.background_spawn(async move {
+            processing::summarize(provider, &preferences, &segments, prompt.as_deref())
+        });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
@@ -647,8 +654,9 @@ impl Workspace {
         self.jobs.insert(id, Work::GeneratingMarkers);
         self.errors.remove(&id);
         let preferences = self.settings.agent(provider).clone();
+        let prompt = self.settings.markers_prompt.clone();
         let task = cx.background_spawn(async move {
-            processing::generate_markers(provider, &preferences, &segments)
+            processing::generate_markers(provider, &preferences, &segments, prompt.as_deref())
         });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
@@ -1013,6 +1021,63 @@ impl Workspace {
                         success
                     })
                     .unwrap_or(false)
+                })
+        });
+    }
+
+    fn edit_prompt(&self, kind: PromptKind, window: &mut Window, cx: &mut Context<Self>) {
+        let (title, default, saved) = match kind {
+            PromptKind::Summary => (
+                "Instrucciones del resumen",
+                processing::DEFAULT_SUMMARY_PROMPT,
+                self.settings.summary_prompt.as_deref(),
+            ),
+            PromptKind::Markers => (
+                "Instrucciones de los marcadores",
+                processing::DEFAULT_MARKERS_PROMPT,
+                self.settings.markers_prompt.as_deref(),
+            ),
+        };
+        let input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .rows(8)
+                .default_value(saved.unwrap_or(default))
+        });
+        let weak = cx.weak_entity();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let weak = weak.clone();
+            let text = input.clone();
+            let reset = input.clone();
+            dialog.confirm()
+                .title(title)
+                .description("Personaliza el enfoque, el nivel de detalle y el idioma. Se aplicará a las próximas generaciones manuales y automáticas.")
+                .child(Textarea::new(&input))
+                .ok_text("Guardar")
+                .cancel_text("Cancelar")
+                .footer(DialogFooter::new()
+                    .child(Button::new("reset-prompt")
+                        .ghost().cursor_pointer().label("Restablecer")
+                        .on_click(move |_, window, cx| reset.update(cx, |input, cx| input.set_value(default, window, cx))))
+                    .child(div().flex_1())
+                    .child(DialogClose::new()
+                        .trigger(|button| button.label("Cancelar").cursor_pointer()))
+                    .child(DialogAction::new().child(
+                        Button::new("save-prompt")
+                            .primary().label("Guardar").cursor_pointer())))
+                .on_ok(move |_, _, cx| {
+                    let value = text.read(cx).value().trim().to_owned();
+                    let value = (!value.is_empty() && value != default).then_some(value);
+                    weak.update(cx, |this, cx| {
+                        let mut settings = this.settings.clone();
+                        match kind {
+                            PromptKind::Summary => settings.summary_prompt = value,
+                            PromptKind::Markers => settings.markers_prompt = value,
+                        }
+                        match this.library.save_settings(&settings) {
+                            Ok(()) => { this.settings = settings; cx.notify(); true }
+                            Err(error) => { this.report(error); cx.notify(); false }
+                        }
+                    }).unwrap_or(false)
                 })
         });
     }

@@ -52,13 +52,15 @@ impl Provider {
     }
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) dark: Option<bool>,
     pub(crate) provider: Option<Provider>,
     pub(crate) automatic: bool,
     pub(crate) automatic_markers: bool,
+    pub(crate) summary_prompt: Option<String>,
+    pub(crate) markers_prompt: Option<String>,
     pub(crate) codex: AgentPreferences,
     pub(crate) copilot: AgentPreferences,
     pub(crate) claude: AgentPreferences,

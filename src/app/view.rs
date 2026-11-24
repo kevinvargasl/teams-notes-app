@@ -23,7 +23,8 @@ use gpui_kit::{
 use uuid::Uuid;
 
 use super::{
-    AddMarker, Edit, MoveMeetingDown, MoveMeetingUp, PlaybackCommand, Tab, Work, Workspace,
+    AddMarker, Edit, MoveMeetingDown, MoveMeetingUp, PlaybackCommand, PromptKind, Tab, Work,
+    Workspace,
 };
 use crate::library::{Meeting, Provider};
 
@@ -410,6 +411,24 @@ impl Workspace {
                                 .cursor_pointer().w_full().disabled(self.options_loading))))
                 })
                 .when(self.options_loading, |view| view.child(muted("Cargando modelos y niveles de esfuerzo…", cx).text_xs()))
+                .child(v_flex().gap_3().pt_2()
+                    .child(section("Instrucciones de generación"))
+                    .children([
+                        (PromptKind::Summary, "Resumen", self.settings.summary_prompt.is_some()),
+                        (PromptKind::Markers, "Marcadores", self.settings.markers_prompt.is_some()),
+                    ].map(|(kind, title, custom)| {
+                        h_flex().gap_4()
+                            .child(v_flex().flex_1().min_w_0().gap_1()
+                                .child(div().font_medium().child(title))
+                                .child(muted(if custom { "Personalizadas" } else { "Predeterminadas" }, cx).text_xs()))
+                            .child(compact_button(match kind {
+                                PromptKind::Summary => "edit-summary-prompt",
+                                PromptKind::Markers => "edit-markers-prompt",
+                            }).ghost()
+                                .icon(Icon::default().path("icons/pencil.svg"))
+                                .label("Editar…")
+                                .on_click(cx.listener(move |this, _, window, cx| this.edit_prompt(kind, window, cx))))
+                    })))
                 .child(v_flex().gap_1().pt_2()
                     .child(section("Al terminar una reunión"))
                     .child(settings_toggle("Resúmenes automáticos", "Decisiones, tareas y preguntas abiertas.",
