@@ -58,6 +58,7 @@ pub(crate) struct Settings {
     pub(crate) dark: Option<bool>,
     pub(crate) provider: Option<Provider>,
     pub(crate) automatic: bool,
+    pub(crate) automatic_markers: bool,
     pub(crate) codex: AgentPreferences,
     pub(crate) copilot: AgentPreferences,
     pub(crate) claude: AgentPreferences,
@@ -117,6 +118,12 @@ impl Meeting {
             summary: None,
         }
     }
+
+    pub(crate) fn replace_generated_markers(&mut self, markers: Vec<Marker>) {
+        self.markers.retain(|marker| !marker.generated);
+        self.markers.extend(markers);
+        self.markers.sort_by_key(|marker| marker.ms);
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -124,6 +131,8 @@ pub(crate) struct Marker {
     pub(crate) id: Uuid,
     pub(crate) ms: u64,
     pub(crate) label: String,
+    #[serde(default)]
+    pub(crate) generated: bool,
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]

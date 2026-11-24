@@ -13,7 +13,7 @@ use gpui_kit::{
 };
 use std::borrow::Cow;
 
-icon_assets!(AppIcons, [Pencil, Trash]);
+icon_assets!(AppIcons, [Pencil, Trash, BookmarkPlus]);
 
 struct AppAssets;
 

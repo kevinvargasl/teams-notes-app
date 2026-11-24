@@ -385,6 +385,11 @@ impl Workspace {
                     .checked(self.settings.automatic)
                     .disabled(self.settings.provider.is_none())
                     .on_change(cx.listener(|this, enabled, window, cx| this.set_automatic(*enabled, window, cx))))
+                .child(Switch::new("automatic-markers").cursor_pointer()
+                    .label("Generar marcadores automáticamente")
+                    .checked(self.settings.automatic_markers)
+                    .disabled(self.settings.provider.is_none())
+                    .on_change(cx.listener(|this, enabled, window, cx| this.set_automatic_markers(*enabled, window, cx))))
                 .child(muted("El proveedor recibe la transcripción. El audio se queda en tu Mac.", cx)))
             .child(v_flex().gap_2()
                 .child(section("Transcripción"))
@@ -830,18 +835,55 @@ impl Workspace {
     fn markers(&self, meeting: &Meeting, cx: &Context<Self>) -> impl IntoElement {
         let id = meeting.id;
         let can_mark = self.capture.is_none()
-            && self
-                .playback
-                .as_ref()
-                .is_some_and(|(playing, _)| *playing == id);
+            && !self.starting
+            && meeting.duration_ms > 0
+            && self.jobs.get(&id) != Some(&Work::Saving);
         pane("markers")
             .child(
-                regular_button("mark-playback")
-                    .label("Marcar posición")
-                    .disabled(!can_mark)
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.add_marker(&AddMarker, window, cx)),
+                h_flex()
+                    .gap_2()
+                    .child(
+                        icon_button(
+                            "mark-playback",
+                            "icons/bookmark-plus.svg",
+                            "Marcar posición",
+                        )
+                        .ghost()
+                        .disabled(!can_mark)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.add_marker(&AddMarker, window, cx)
+                        })),
+                    )
+                    .child(
+                        icon_button(
+                            "generate-markers",
+                            "icons/refresh-cw.svg",
+                            "Generar marcadores…",
+                        )
+                        .ghost()
+                        .disabled(
+                            self.jobs.contains_key(&id)
+                                || !meeting
+                                    .transcript
+                                    .as_ref()
+                                    .is_some_and(|segments| !segments.is_empty()),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| this.request_markers(id, window, cx),
+                        )),
                     ),
+            )
+            .when(
+                !meeting
+                    .transcript
+                    .as_ref()
+                    .is_some_and(|segments| !segments.is_empty()),
+                |view| {
+                    view.child(muted(
+                        "Genera la transcripción para crear marcadores con IA.",
+                        cx,
+                    ))
+                },
             )
             .when(meeting.markers.is_empty(), |view| {
                 view.child(muted(

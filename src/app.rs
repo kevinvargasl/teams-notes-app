@@ -57,6 +57,7 @@ enum Work {
     Saving,
     Transcribing,
     Summarizing,
+    GeneratingMarkers,
 }
 
 impl Work {
@@ -65,6 +66,7 @@ impl Work {
             Self::Saving => "Guardando audio…",
             Self::Transcribing => "Transcribiendo con Whisper…",
             Self::Summarizing => "Generando resumen…",
+            Self::GeneratingMarkers => "Generando marcadores…",
         }
     }
 }
@@ -365,22 +367,31 @@ impl Workspace {
                 id: Uuid::new_v4(),
                 ms: position,
                 label: "Momento importante".into(),
+                generated: false,
             };
             meeting.markers.push(marker);
             if let Err(error) = self.library.save_meeting(meeting) {
                 self.report(error);
             }
-        } else if let Some((id, playback)) = self.playback.as_ref() {
-            let position = playback.position_ms(
-                self.selected_meeting()
-                    .map_or(0, |meeting| meeting.duration_ms),
-            );
-            let id = *id;
+        } else if let Some(meeting) = self.selected_meeting() {
+            let id = meeting.id;
+            if self.starting
+                || meeting.duration_ms == 0
+                || self.jobs.get(&id) == Some(&Work::Saving)
+            {
+                return;
+            }
+            let position = self
+                .playback
+                .as_ref()
+                .filter(|(active, _)| *active == id)
+                .map_or(0, |(_, playback)| playback.position_ms(meeting.duration_ms));
             let result = self.update_meeting(id, |meeting| {
                 meeting.markers.push(Marker {
                     id: Uuid::new_v4(),
                     ms: position,
                     label: "Momento importante".into(),
+                    generated: false,
                 });
                 meeting.markers.sort_by_key(|marker| marker.ms);
             });
@@ -484,10 +495,17 @@ impl Workspace {
                 });
                 match result {
                     Ok(()) => {
-                        if this.settings.automatic
-                            && let Some(provider) = this.settings.provider
-                        {
-                            this.start_summary(id, provider, cx);
+                        if let Some(provider) = this.settings.provider {
+                            if this.settings.automatic {
+                                this.start_summary(
+                                    id,
+                                    provider,
+                                    this.settings.automatic_markers,
+                                    cx,
+                                );
+                            } else if this.settings.automatic_markers {
+                                this.start_markers(id, provider, cx);
+                            }
                         }
                     }
                     Err(error) => {
@@ -512,7 +530,7 @@ impl Workspace {
             .iter()
             .any(|meeting| meeting.id == id && meeting.summary.is_some());
         if self.settings.automatic && !regenerating {
-            self.start_summary(id, provider, cx);
+            self.start_summary(id, provider, false, cx);
             return;
         }
         let weak = cx.weak_entity();
@@ -533,13 +551,19 @@ impl Workspace {
                 ))
                 .cancel_text("Cancelar")
                 .on_ok(move |_, _, cx| {
-                    let _ = weak.update(cx, |this, cx| this.start_summary(id, provider, cx));
+                    let _ = weak.update(cx, |this, cx| this.start_summary(id, provider, false, cx));
                     true
                 })
         });
     }
 
-    fn start_summary(&mut self, id: Uuid, provider: Provider, cx: &mut Context<Self>) {
+    fn start_summary(
+        &mut self,
+        id: Uuid,
+        provider: Provider,
+        generate_markers_afterwards: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.jobs.contains_key(&id) {
             return;
         }
@@ -568,6 +592,70 @@ impl Workspace {
                     this.update_meeting(id, |meeting| {
                         meeting.summary = Some(summary);
                     })
+                });
+                if generate_markers_afterwards
+                    && this.settings.automatic_markers
+                    && this.settings.provider == Some(provider)
+                {
+                    this.start_markers(id, provider, cx);
+                }
+                if let Err(error) = result {
+                    this.errors.insert(id, format!("{error:#}"));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn request_markers(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(provider) = self.settings.provider else {
+            self.toggle_preferences(window, cx);
+            return;
+        };
+        let weak = cx.weak_entity();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let weak = weak.clone();
+            dialog.confirm()
+                .title("¿Generar marcadores?")
+                .description(format!("Se enviará el texto con sus tiempos a {}. El audio y los nombres de hablantes no se envían. Se reemplazarán los marcadores generados anteriormente y se conservarán los manuales y los que hayas renombrado.", provider.name()))
+                .ok_text("Generar marcadores")
+                .footer(view::confirmation_footer("Generar marcadores", ButtonVariant::Primary))
+                .cancel_text("Cancelar")
+                .on_ok(move |_, _, cx| {
+                    let _ = weak.update(cx, |this, cx| this.start_markers(id, provider, cx));
+                    true
+                })
+        });
+    }
+
+    fn start_markers(&mut self, id: Uuid, provider: Provider, cx: &mut Context<Self>) {
+        if self.jobs.contains_key(&id) {
+            return;
+        }
+        let Some(segments) = self
+            .meetings
+            .iter()
+            .find(|meeting| meeting.id == id)
+            .and_then(|meeting| meeting.transcript.as_ref())
+            .filter(|segments| !segments.is_empty())
+            .cloned()
+        else {
+            return;
+        };
+        self.jobs.insert(id, Work::GeneratingMarkers);
+        self.errors.remove(&id);
+        let preferences = self.settings.agent(provider).clone();
+        let task = cx.background_spawn(async move {
+            processing::generate_markers(provider, &preferences, &segments)
+        });
+        cx.spawn(async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update(cx, |this, cx| {
+                this.jobs.remove(&id);
+                let result = result.and_then(|markers| {
+                    this.update_meeting(id, |meeting| meeting.replace_generated_markers(markers))
                 });
                 if let Err(error) = result {
                     this.errors.insert(id, format!("{error:#}"));
@@ -667,6 +755,7 @@ impl Workspace {
         if self.settings.provider != Some(provider) {
             self.settings.provider = Some(provider);
             self.settings.automatic = false;
+            self.settings.automatic_markers = false;
             self.save_settings(cx);
             self.check_provider(cx);
             self.refresh_agent_options(window, cx);
@@ -838,6 +927,41 @@ impl Workspace {
         });
     }
 
+    fn set_automatic_markers(
+        &mut self,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(provider) = self.settings.provider else {
+            return;
+        };
+        if !enabled {
+            self.settings.automatic_markers = false;
+            self.save_settings(cx);
+            return;
+        }
+        let weak = cx.weak_entity();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let weak = weak.clone();
+            dialog.confirm()
+                .title("¿Generar marcadores automáticamente?")
+                .description(format!("Al finalizar la grabación y su transcripción, la app enviará el texto con sus tiempos a {} para generar marcadores. El audio se queda en tu Mac.", provider.name()))
+                .ok_text("Activar")
+                .footer(view::confirmation_footer("Activar", ButtonVariant::Primary))
+                .cancel_text("Cancelar")
+                .on_ok(move |_, _, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        if this.settings.provider == Some(provider) {
+                            this.settings.automatic_markers = true;
+                            this.save_settings(cx);
+                        }
+                    });
+                    true
+                })
+        });
+    }
+
     fn set_theme(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.dark = Some(dark);
         theme::apply(Some(dark), window, cx);
@@ -877,6 +1001,7 @@ impl Workspace {
                                     meeting.markers.iter_mut().find(|m| m.id == marker_id)
                                 {
                                     marker.label = name;
+                                    marker.generated = false;
                                 }
                             }
                         });
