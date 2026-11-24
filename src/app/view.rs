@@ -1,31 +1,36 @@
-use gpui_kit::base::StyledExt;
+use gpui_kit::base::{SelectableText, StyledExt};
 use std::time::Duration;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Sizable, ThemeMode,
+    ActiveTheme, Disableable, Icon, Selectable, Sizable, ThemeMode,
     button::{Button, ButtonVariants},
+    dialog::{DialogAction, DialogClose, DialogFooter},
     h_flex,
     input::Input,
     scroll::ScrollableElement,
+    select::Select,
+    slider::{Slider, SliderValue},
     switch::Switch,
+    tab::{Tab as TabItem, TabBar},
     v_flex,
 };
 use gpui_kit::{
-    Context, Div, InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, div, prelude::FluentBuilder,
+    Context, Div, ElementId, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    Styled, Window, div, prelude::FluentBuilder,
 };
 use uuid::Uuid;
 
-use super::{AddMarker, Edit, Tab, Work, Workspace};
+use super::{AddMarker, Edit, PlaybackCommand, Tab, Work, Workspace};
 use crate::library::{Meeting, Provider};
 
 const SEGMENTS_PER_PAGE: usize = 100;
 
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.meetings.iter().find(|m| Some(m.id) == self.selected);
+        let selected = self.selected_meeting();
         v_flex()
             .size_full()
+            .text_sm()
             .text_color(cx.theme().foreground)
             .bg(cx.theme().background)
             .track_focus(&self.focus)
@@ -41,8 +46,7 @@ impl Render for Workspace {
                         .bg(cx.theme().muted)
                         .child(div().flex_1().text_sm().child(notice))
                         .child(
-                            Button::new("dismiss-notice")
-                                .small()
+                            compact_button("dismiss-notice")
                                 .ghost()
                                 .label("Cerrar")
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -104,34 +108,30 @@ impl Workspace {
                 .child(muted(format!("Teams · {teams}"), cx))
                 .child(div().flex_1())
                 .child(
-                    Button::new("marker-record")
-                        .small()
-                        .label(format!("Marcar ({})", meeting.markers.len()))
+                    compact_button("marker-record")
+                        .label(format!("Añadir marcador ({})", meeting.markers.len()))
+                        .tooltip("Añadir marcador · ⌘⇧M")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.add_marker(&AddMarker, window, cx)
                         })),
                 )
                 .child(
-                    Button::new("pause-record")
-                        .small()
-                        .label(if active.is_paused() {
-                            "Reanudar"
-                        } else {
-                            "Pausar"
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some((_, capture)) = this.capture.as_ref() {
-                                capture.toggle_pause();
-                            }
-                            cx.notify();
-                        })),
+                    if active.is_paused() {
+                        icon_button("pause-record", "icons/play.svg", "Reanudar grabación")
+                    } else {
+                        icon_button("pause-record", "icons/pause.svg", "Pausar grabación")
+                    }
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some((_, capture)) = this.capture.as_ref() {
+                            capture.toggle_pause();
+                        }
+                        cx.notify();
+                    })),
                 )
                 .child(
-                    Button::new("stop-record")
-                        .small()
+                    icon_button("stop-record", "icons/square.svg", "Detener grabación")
                         .danger()
-                        .label("Detener")
-                        .on_click(cx.listener(|this, _, _, cx| this.finish(cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.finish(window, cx))),
                 )
         } else {
             toolbar
@@ -139,11 +139,19 @@ impl Workspace {
                 .child(div().flex_1())
                 .child(
                     Button::new("start-record")
-                        .label(if self.starting {
-                            "Preparando…"
-                        } else {
-                            "Grabar"
-                        })
+                        .cursor_pointer()
+                        .large()
+                        .size_10()
+                        .p_0()
+                        .ghost()
+                        .icon(
+                            Icon::default()
+                                .data(br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="5" fill="currentColor"/></svg>"#)
+                                .text_color(cx.theme().button_danger),
+                        )
+                        .accessibility_label("Grabar")
+                        .tooltip("Grabar")
+                        .loading(self.starting)
                         .disabled(
                             self.starting || self.jobs.values().any(|job| *job == Work::Saving),
                         )
@@ -154,7 +162,7 @@ impl Workspace {
 
     fn sidebar(&self, cx: &Context<Self>) -> impl IntoElement {
         let query = self.search.read(cx).value().trim().to_lowercase();
-        let rows = self
+        let mut rows = self
             .meetings
             .iter()
             .filter(|meeting| {
@@ -169,30 +177,42 @@ impl Workspace {
             .map(|meeting| {
                 let id = meeting.id;
                 let selected = !self.preferences && self.selected == Some(id);
-                let button = Button::new(SharedString::from(format!("meeting-{id}")))
+                let button = regular_button(SharedString::from(format!("meeting-{id}")))
                     .w_full()
+                    .ghost()
+                    .selected(selected)
+                    .when(selected, |button| {
+                        button
+                            .bg(cx.theme().transparent)
+                            .text_color(cx.theme().primary)
+                    })
                     .label(meeting.title.clone())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.select(id);
+                    .tooltip(meeting.title.clone())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select(id, window, cx);
                         cx.notify();
                     }));
-                v_flex()
-                    .gap_1()
-                    .pb_2()
-                    .child(if selected {
-                        button.outline()
-                    } else {
-                        button.ghost()
-                    })
-                    .child(div().px_2().child(muted(
-                        format!(
-                            "{} · {}",
-                            date_label(meeting.created),
-                            timestamp(meeting.duration_ms)
-                        ),
-                        cx,
-                    )))
-            });
+                v_flex().gap_1().pb_2().child(button).child(
+                    div().px_2().text_center().child(
+                        muted(
+                            format!(
+                                "{} · {}",
+                                date_label(meeting.created),
+                                timestamp(meeting.duration_ms)
+                            ),
+                            cx,
+                        )
+                        .text_xs(),
+                    ),
+                )
+            })
+            .peekable();
+        let empty_message = if self.meetings.is_empty() {
+            "Todavía no hay reuniones."
+        } else {
+            "No se encontraron reuniones."
+        };
+        let no_results = rows.peek().is_none();
         v_flex()
             .w_56()
             .flex_shrink_0()
@@ -202,23 +222,35 @@ impl Workspace {
             .bg(cx.theme().sidebar)
             .border_r_1()
             .border_color(cx.theme().border)
-            .child(Input::new(&self.search).cleanable(true))
+            .child(
+                Input::new(&self.search)
+                    .h_9()
+                    .aria_label("Buscar reuniones")
+                    .cleanable(true),
+            )
             .child(
                 v_flex()
                     .id("meeting-library")
                     .min_h_0()
                     .flex_1()
                     .children(rows)
-                    .when(self.meetings.is_empty(), |view| {
-                        view.child(muted("Todavía no hay reuniones.", cx))
-                    })
+                    .when(no_results, |view| view.child(muted(empty_message, cx)))
                     .overflow_y_scrollbar(),
             )
             .child(
-                Button::new("settings")
+                regular_button("settings")
                     .ghost()
+                    .selected(self.preferences)
+                    .when(self.preferences, |button| {
+                        button
+                            .bg(cx.theme().transparent)
+                            .text_color(cx.theme().primary)
+                    })
+                    .icon(Icon::default().path("icons/settings.svg"))
                     .label("Configuración")
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_preferences(cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.toggle_preferences(window, cx)),
+                    ),
             )
     }
 
@@ -229,29 +261,43 @@ impl Workspace {
             .child(v_flex().gap_2()
                 .child(section("Apariencia"))
                 .child(h_flex().gap_2().children([("Claro", false), ("Oscuro", true)].map(|(name, value)| {
-                    let button = Button::new(name).label(name)
-                        .on_click(cx.listener(move |this, _, window, cx| this.set_theme(value, window, cx)));
-                    if dark == value { button.outline() } else { button.ghost() }
+                    regular_button(name).outline().selected(dark == value)
+                        .when(dark == value, |button| button.bg(cx.theme().transparent).text_color(cx.theme().primary))
+                        .label(name)
+                        .on_click(cx.listener(move |this, _, window, cx| this.set_theme(value, window, cx)))
                 }))))
             .child(v_flex().gap_2()
                 .child(section("Resúmenes"))
                 .child("Herramienta de IA")
-                .child(h_flex().gap_2().children([Provider::Codex, Provider::Copilot].map(|provider| {
-                    let button = Button::new(provider.name()).label(provider.name())
-                        .on_click(cx.listener(move |this, _, _, cx| this.set_provider(provider, cx)));
-                    if self.settings.provider == Some(provider) { button.outline() } else { button.ghost() }
+                .child(h_flex().gap_2().children([Provider::Codex, Provider::Copilot, Provider::Claude].map(|provider| {
+                    regular_button(provider.name()).outline().selected(self.settings.provider == Some(provider))
+                        .when(self.settings.provider == Some(provider), |button| button.bg(cx.theme().transparent).text_color(cx.theme().primary))
+                        .label(provider.name())
+                        .on_click(cx.listener(move |this, _, window, cx| this.set_provider(provider, window, cx)))
                 })))
                 .child(muted(match self.settings.provider {
                     Some(Provider::Codex) if Provider::Codex.executable().is_some() && self.codex_signed_in == Some(true) =>
                         "Codex · Listo".into(),
                     Some(Provider::Codex) if Provider::Codex.executable().is_some() && self.codex_signed_in == Some(false) =>
                         "Codex · Inicia sesión con tu cuenta de ChatGPT en la terminal.".into(),
+                    Some(Provider::Claude) if Provider::Claude.executable().is_some() && self.claude_signed_in == Some(true) =>
+                        "Claude Code · Listo".into(),
+                    Some(Provider::Claude) if Provider::Claude.executable().is_some() && self.claude_signed_in == Some(false) =>
+                        "Claude Code · Inicia sesión en la terminal con claude auth login.".into(),
                     Some(provider) if provider.executable().is_some() =>
                         format!("{} · CLI instalada. Usa la sesión iniciada en la terminal.", provider.name()),
                     Some(provider) => format!("{} · CLI no instalada.", provider.name()),
                     None => "Elige la herramienta que usas en la terminal.".into(),
                 }, cx))
-                .child(Switch::new("automatic-summary")
+                .when_some(self.model_select.as_ref().zip(self.effort_select.as_ref()), |view, (model, effort)| {
+                    view.child(h_flex().items_start().gap_4()
+                        .child(v_flex().flex_1().min_w_0().gap_2().child("Modelo")
+                            .child(Select::new(model).cursor_pointer().w_full().disabled(self.options_loading)))
+                        .child(v_flex().flex_1().min_w_0().gap_2().child("Esfuerzo de razonamiento")
+                            .child(Select::new(effort).cursor_pointer().w_full().disabled(self.options_loading))))
+                })
+                .when(self.options_loading, |view| view.child(muted("Cargando modelos y niveles de esfuerzo…", cx)))
+                .child(Switch::new("automatic-summary").cursor_pointer()
                     .label("Generar resúmenes automáticamente")
                     .checked(self.settings.automatic)
                     .disabled(self.settings.provider.is_none())
@@ -264,7 +310,15 @@ impl Workspace {
             .child(v_flex().gap_2()
                 .child(section("Grabación"))
                 .child(muted("Se usa la entrada predeterminada de macOS. Silenciarte en Teams no detiene la grabación del micrófono.", cx))
-                .child(muted("Añadir marcador durante la grabación · ⌘⇧M", cx)));
+                .child(muted("Añadir marcador durante la grabación · ⌘⇧M", cx)))
+            .child(v_flex().gap_2()
+                .child(section("Archivos"))
+                .child(h_flex().gap_3()
+                    .child(regular_button("open-recordings-folder")
+                        .icon(Icon::default().path("icons/folder-open.svg"))
+                        .label("Abrir en Finder")
+                        .on_click(cx.listener(|this, _, _, cx| this.open_recordings_folder(cx))))
+                    .child(muted("Grabaciones y transcripciones guardadas en tu Mac.", cx).flex_1().min_w_0())));
         settings.id("settings-scroll").overflow_y_scrollbar()
     }
 
@@ -272,7 +326,7 @@ impl Workspace {
         if self.library.model_path().is_file() {
             muted("Modelo de Whisper instalado.", cx).into_any_element()
         } else {
-            Button::new("download-model")
+            regular_button("download-model")
                 .label(if self.downloading {
                     "Descargando Whisper…"
                 } else {
@@ -303,27 +357,42 @@ impl Workspace {
                         h_flex()
                             .gap_2()
                             .child(
-                                div()
+                                h_flex()
                                     .min_w_0()
-                                    .flex_1()
-                                    .text_lg()
-                                    .font_semibold()
-                                    .child(title.clone()),
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_lg()
+                                            .font_semibold()
+                                            .child(title.clone()),
+                                    )
+                                    .child(
+                                        icon_button(
+                                            "rename-meeting",
+                                            "icons/pencil.svg",
+                                            "Renombrar…",
+                                        )
+                                        .ghost()
+                                        .flex_shrink_0()
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.edit(
+                                                    Edit::Meeting(id),
+                                                    title.clone(),
+                                                    window,
+                                                    cx,
+                                                )
+                                            }),
+                                        ),
+                                    ),
                             )
+                            .child(div().flex_1())
                             .child(
-                                Button::new("rename-meeting")
-                                    .small()
+                                icon_button("delete-meeting", "icons/trash.svg", "Eliminar…")
                                     .ghost()
-                                    .label("Renombrar…")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.edit(Edit::Meeting(id), title.clone(), window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("delete-meeting")
-                                    .small()
-                                    .ghost()
-                                    .label("Eliminar…")
+                                    .flex_shrink_0()
                                     .disabled(work.is_some())
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.delete(id, delete_title.clone(), window, cx)
@@ -342,32 +411,26 @@ impl Workspace {
                     .child(self.player(meeting, cx)),
             )
             .child(
-                h_flex()
-                    .gap_2()
+                TabBar::new("meeting-tabs")
+                    .underline()
                     .px_4()
-                    .py_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .children(
-                        [
-                            ("Resumen", Tab::Summary),
-                            ("Transcripción", Tab::Transcript),
-                            ("Marcadores", Tab::Markers),
-                        ]
-                        .map(|(name, tab)| {
-                            let button = Button::new(name).label(name).small().on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.tab = tab;
-                                    cx.notify();
-                                }),
-                            );
-                            if self.tab == tab {
-                                button.outline()
-                            } else {
-                                button.ghost()
-                            }
-                        }),
-                    ),
+                        Tab::ALL.map(|tab| TabItem::new().label(tab.label()).cursor_pointer()),
+                    )
+                    .selected_index(
+                        Tab::ALL
+                            .iter()
+                            .position(|tab| *tab == self.tab)
+                            .unwrap_or_default(),
+                    )
+                    .on_click(cx.listener(|this, index: &usize, _, cx| {
+                        if let Some(tab) = Tab::ALL.get(*index) {
+                            this.tab = *tab;
+                            cx.notify();
+                        }
+                    })),
             )
             .child(match self.tab {
                 Tab::Summary => self.summary(meeting, cx).into_any_element(),
@@ -378,60 +441,86 @@ impl Workspace {
 
     fn player(&self, meeting: &Meeting, cx: &Context<Self>) -> impl IntoElement {
         let id = meeting.id;
-        let playback = self
-            .playback
-            .as_ref()
-            .filter(|(id, _)| *id == meeting.id)
-            .map(|(_, player)| player.player());
-        let playing = playback.is_some_and(|p| !p.is_paused() && !p.empty());
-        let position = playback.map_or(0, |p| p.get_pos().as_millis() as u64);
-        let disabled =
-            self.capture.is_some() || self.starting || self.jobs.get(&id) == Some(&Work::Saving);
-        h_flex()
+        let playback = self.playback.as_ref().filter(|(active, _)| *active == id);
+        let playing = playback.is_some_and(|(_, playback)| {
+            let player = playback.player();
+            !player.is_paused() && !player.empty()
+        });
+        let duration = meeting.duration_ms;
+        let position = match self.timeline.read(cx).value() {
+            SliderValue::Single(value) if self.scrubbing => {
+                (f64::from(value) * duration as f64 / 1000.).round() as u64
+            }
+            _ => playback.map_or(0, |(_, playback)| playback.position_ms(duration)),
+        };
+        let disabled = duration == 0
+            || self.capture.is_some()
+            || self.starting
+            || self.jobs.get(&id) == Some(&Work::Saving);
+        v_flex()
             .gap_2()
-            .flex_wrap()
             .child(
-                Button::new("play")
-                    .small()
-                    .label(if playing {
-                        "Pausar audio"
-                    } else {
-                        "Reproducir"
-                    })
+                Slider::new(&self.timeline)
+                    .cursor_pointer()
+                    .w_full()
                     .disabled(disabled)
-                    .on_click(cx.listener(move |this, _, _, cx| this.play(id, None, cx))),
+                    .accessibility_label("Posición de reproducción"),
             )
             .child(
-                Button::new("back-15")
-                    .small()
-                    .ghost()
-                    .label("−15 s")
-                    .disabled(disabled || position == 0)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.play(id, Some(position.saturating_sub(15_000)), cx)
-                    })),
-            )
-            .child(
-                Button::new("forward-15")
-                    .small()
-                    .ghost()
-                    .label("+15 s")
-                    .disabled(disabled || position >= meeting.duration_ms)
-                    .on_click(cx.listener({
-                        let target = position.saturating_add(15_000).min(meeting.duration_ms);
-                        move |this, _, _, cx| this.play(id, Some(target), cx)
-                    })),
-            )
-            .child(
-                div()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!(
-                        "{} / {}",
-                        timestamp(position),
-                        timestamp(meeting.duration_ms)
-                    )),
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        if playing {
+                            icon_button("play", "icons/pause.svg", "Pausar audio")
+                        } else {
+                            icon_button("play", "icons/play.svg", "Reproducir audio")
+                        }
+                        .disabled(disabled)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.play(id, PlaybackCommand::Toggle, window, cx)
+                            },
+                        )),
+                    )
+                    .child(
+                        compact_button("back-15")
+                            .ghost()
+                            .label("−15 s")
+                            .tooltip("Retroceder 15 segundos")
+                            .disabled(disabled || position == 0)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.play(
+                                    id,
+                                    PlaybackCommand::Seek(position.saturating_sub(15_000)),
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(
+                        compact_button("forward-15")
+                            .ghost()
+                            .label("+15 s")
+                            .tooltip("Avanzar 15 segundos")
+                            .disabled(disabled || position >= duration)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.play(
+                                    id,
+                                    PlaybackCommand::Seek(position.saturating_add(15_000)),
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{} / {}", timestamp(position), timestamp(duration))),
+                    ),
             )
     }
 
@@ -451,17 +540,32 @@ impl Workspace {
                             cx,
                         )))
                         .child(
-                            Button::new("edit-summary")
-                                .small()
+                            icon_button("edit-summary", "icons/pencil.svg", "Editar resumen…")
                                 .ghost()
-                                .label("Editar resumen…")
                                 .disabled(work.is_some())
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.edit_summary(id, text.clone(), window, cx)
                                 })),
+                        )
+                        .child(
+                            icon_button(
+                                "regenerate-summary",
+                                "icons/refresh-cw.svg",
+                                "Volver a generar…",
+                            )
+                            .ghost()
+                            .disabled(
+                                work.is_some() || meeting.transcript.is_none() || empty_transcript,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| this.request_summary(id, window, cx),
+                            )),
                         ),
                 )
-                .child(div().child(summary.content.summary.clone()));
+                .child(selectable_text(
+                    SharedString::from(format!("summary-text-{id}")),
+                    summary.content.summary.clone(),
+                ));
             for (heading, items) in [
                 ("Decisiones", &summary.content.decisions),
                 ("Preguntas abiertas", &summary.content.questions),
@@ -500,11 +604,13 @@ impl Workspace {
                 cx,
             ));
         }
-        if meeting.transcript.is_some() && !empty_transcript && work.is_none() {
+        if meeting.summary.is_none()
+            && meeting.transcript.is_some()
+            && !empty_transcript
+            && work.is_none()
+        {
             let label = if self.settings.provider.is_none() {
                 "Elegir herramienta de IA"
-            } else if meeting.summary.is_some() {
-                "Volver a generar…"
             } else if self.errors.contains_key(&id) {
                 "Reintentar resumen…"
             } else if self.settings.automatic {
@@ -512,7 +618,7 @@ impl Workspace {
             } else {
                 "Generar resumen…"
             };
-            content = content.child(Button::new("generate-summary").label(label).on_click(
+            content = content.child(regular_button("generate-summary").label(label).on_click(
                 cx.listener(move |this, _, window, cx| this.request_summary(id, window, cx)),
             ));
         }
@@ -541,7 +647,7 @@ impl Workspace {
         v_flex()
             .id(SharedString::from(format!("summary-item-{text}-{ids:?}")))
             .gap_1()
-            .child(text)
+            .child(selectable_text("summary-item-text", text))
             .child(links)
     }
 
@@ -561,8 +667,7 @@ impl Workspace {
                         h_flex()
                             .gap_2()
                             .child(
-                                Button::new("prev-segments")
-                                    .small()
+                                compact_button("prev-segments")
                                     .label("Anterior")
                                     .disabled(page == 0)
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -573,8 +678,7 @@ impl Workspace {
                             )
                             .child(muted(format!("Página {} de {pages}", page + 1), cx))
                             .child(
-                                Button::new("next-segments")
-                                    .small()
+                                compact_button("next-segments")
                                     .label("Siguiente")
                                     .disabled(page + 1 == pages)
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -608,7 +712,13 @@ impl Workspace {
                                         .flex_1()
                                         .gap_1()
                                         .child(muted(segment.source.label(), cx))
-                                        .child(div().child(segment.text.clone())),
+                                        .child(selectable_text(
+                                            SharedString::from(format!(
+                                                "transcript-text-{}-{}",
+                                                meeting.id, segment.id
+                                            )),
+                                            segment.text.clone(),
+                                        )),
                                 )
                         }),
                 );
@@ -617,7 +727,7 @@ impl Workspace {
             if self.library.model_path().is_file() {
                 let id = meeting.id;
                 content = content.child(
-                    Button::new("transcribe-meeting")
+                    regular_button("transcribe-meeting")
                         .label("Transcribir")
                         .on_click(cx.listener(move |this, _, _, cx| this.start_transcript(id, cx))),
                 );
@@ -642,7 +752,7 @@ impl Workspace {
                 .is_some_and(|(playing, _)| *playing == id);
         pane("markers")
             .child(
-                Button::new("mark-playback")
+                regular_button("mark-playback")
                     .label("Marcar posición")
                     .disabled(!can_mark)
                     .on_click(
@@ -663,8 +773,7 @@ impl Workspace {
                     .child(self.jump(id, format!("marker-{marker_id}"), marker.ms, cx))
                     .child(div().min_w_0().flex_1().child(label.clone()))
                     .child(
-                        Button::new(SharedString::from(format!("edit-{marker_id}")))
-                            .small()
+                        compact_button(SharedString::from(format!("edit-{marker_id}")))
                             .ghost()
                             .label("Renombrar…")
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -676,8 +785,7 @@ impl Workspace {
     }
 
     fn jump(&self, id: Uuid, key: String, position: u64, cx: &Context<Self>) -> Button {
-        Button::new(SharedString::from(key))
-            .small()
+        compact_button(SharedString::from(key))
             .outline()
             .label(timestamp(position))
             .disabled(
@@ -685,8 +793,60 @@ impl Workspace {
                     || self.starting
                     || self.jobs.get(&id) == Some(&Work::Saving),
             )
-            .on_click(cx.listener(move |this, _, _, cx| this.play(id, Some(position), cx)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.play(id, PlaybackCommand::Jump(position), window, cx)
+            }))
     }
+}
+
+fn selectable_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Div {
+    div().cursor_text().child(SelectableText::new(id, text))
+}
+
+pub(super) fn confirmation_footer(
+    label: &'static str,
+    variant: gpui_kit::component::button::ButtonVariant,
+) -> DialogFooter {
+    DialogFooter::new()
+        .child(DialogClose::new().trigger(|button| button.label("Cancelar").cursor_pointer()))
+        .child(
+            DialogAction::new().child(
+                Button::new("confirm")
+                    .label(label)
+                    .with_variant(variant)
+                    .cursor_pointer(),
+            ),
+        )
+}
+
+fn regular_button(id: impl Into<ElementId>) -> Button {
+    Button::new(id)
+        .cursor_pointer()
+        .h_9()
+        .px_4()
+        .text_sm()
+        .font_medium()
+}
+
+fn compact_button(id: impl Into<ElementId>) -> Button {
+    Button::new(id)
+        .cursor_pointer()
+        .small()
+        .h_7()
+        .px_2p5()
+        .text_xs()
+        .font_medium()
+}
+
+fn icon_button(id: &'static str, icon: &'static str, label: &'static str) -> Button {
+    Button::new(id)
+        .cursor_pointer()
+        .small()
+        .size_7()
+        .p_0()
+        .icon(Icon::default().path(icon))
+        .accessibility_label(label)
+        .tooltip(label)
 }
 
 fn pane(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::Stateful<Div> {
@@ -712,6 +872,8 @@ fn timestamp(ms: u64) -> String {
 fn date_label(secs: u64) -> String {
     let date = time::OffsetDateTime::from_unix_timestamp(secs as i64)
         .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    let offset = time::UtcOffset::local_offset_at(date).unwrap_or(time::UtcOffset::UTC);
+    let date = date.to_offset(offset);
     format!(
         "{:02}/{:02}/{}",
         date.day(),

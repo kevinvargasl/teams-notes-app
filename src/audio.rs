@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufReader, BufWriter},
+    io::BufWriter,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -414,7 +414,7 @@ impl Playback {
     pub(crate) fn open(directory: &Path) -> Result<Self> {
         let file = File::open(directory.join(PLAYBACK_FILE))
             .context("El audio todavía no está disponible")?;
-        let source = Decoder::new(BufReader::new(file))?;
+        let source = Decoder::try_from(file)?;
         let output = DeviceSinkBuilder::open_default_sink()
             .context("No se pudo abrir la salida de audio")?;
         let player = Player::connect_new(output.mixer());
@@ -428,6 +428,14 @@ impl Playback {
 
     pub(crate) fn player(&self) -> &Player {
         &self.player
+    }
+
+    pub(crate) fn position_ms(&self, duration_ms: u64) -> u64 {
+        if self.player.empty() {
+            duration_ms
+        } else {
+            (self.player.get_pos().as_millis() as u64).min(duration_ms)
+        }
     }
 
     pub(crate) fn seek(&self, ms: u64) -> Result<()> {

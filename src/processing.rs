@@ -14,7 +14,9 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 
 use crate::{
     audio::{MIC_FILE, RATE, TEAMS_FILE},
-    library::{AudioSource, MODEL_FILE, Provider, Segment, Summary, SummaryContent},
+    library::{
+        AgentPreferences, AudioSource, MODEL_FILE, Provider, Segment, Summary, SummaryContent,
+    },
 };
 
 const MODEL_SHA256: &str = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2";
@@ -150,7 +152,16 @@ pub(crate) fn codex_signed_in(executable: &Path) -> Result<bool> {
         && String::from_utf8_lossy(&status).contains("Logged in using ChatGPT"))
 }
 
-pub(crate) fn summarize(provider: Provider, segments: &[Segment]) -> Result<Summary> {
+pub(crate) fn claude_signed_in(executable: &Path) -> Result<bool> {
+    let login = Command::new(executable).args(["auth", "status"]).output()?;
+    Ok(login.status.success())
+}
+
+pub(crate) fn summarize(
+    provider: Provider,
+    preferences: &AgentPreferences,
+    segments: &[Segment],
+) -> Result<Summary> {
     ensure!(!segments.is_empty(), "La transcripción no contiene diálogo");
     let executable = provider
         .executable()
@@ -177,7 +188,6 @@ pub(crate) fn summarize(provider: Provider, segments: &[Segment]) -> Result<Summ
                     "exec",
                     "--skip-git-repo-check",
                     "--ephemeral",
-                    "--ignore-user-config",
                     "--ignore-rules",
                     "--sandbox",
                     "read-only",
@@ -191,12 +201,22 @@ pub(crate) fn summarize(provider: Provider, segments: &[Segment]) -> Result<Summ
                     "multi_agent",
                     "-c",
                     "web_search=\"disabled\"",
+                    "-c",
+                    "mcp_servers={}",
                     "--output-schema",
                 ])
                 .arg(&schema_path)
                 .arg("--output-last-message")
-                .arg(&result_path)
-                .arg("-");
+                .arg(&result_path);
+            if let Some(model) = &preferences.model {
+                command.args(["--model", model]);
+            }
+            if let Some(effort) = &preferences.effort {
+                command
+                    .arg("-c")
+                    .arg(format!("model_reasoning_effort={effort:?}"));
+            }
+            command.arg("-");
         }
         Provider::Copilot => {
             command.args([
@@ -208,6 +228,41 @@ pub(crate) fn summarize(provider: Provider, segments: &[Segment]) -> Result<Summ
                 "--log-level",
                 "none",
             ]);
+        }
+        Provider::Claude => {
+            command
+                .args(["-p", "--output-format", "json", "--json-schema"])
+                .arg(serde_json::to_string(&schema)?)
+                .args([
+                    "--tools",
+                    "",
+                    "--permission-mode",
+                    "dontAsk",
+                    "--strict-mcp-config",
+                    "--mcp-config",
+                    "{\"mcpServers\":{}}",
+                    "--disallowedTools",
+                    "mcp__*",
+                    "--disable-slash-commands",
+                    "--no-session-persistence",
+                    "--settings",
+                    "{\"disableAllHooks\":true}",
+                ]);
+            if let Some(model) = &preferences.model {
+                command.args(["--model", model]);
+            }
+            if let Some(effort) = &preferences.effort {
+                command.args(["--effort", effort]);
+            }
+        }
+    }
+
+    if provider == Provider::Copilot {
+        if let Some(model) = &preferences.model {
+            command.args(["--model", model]);
+        }
+        if let Some(effort) = &preferences.effort {
+            command.args(["--reasoning-effort", effort]);
         }
     }
 
@@ -251,32 +306,37 @@ pub(crate) fn summarize(provider: Provider, segments: &[Segment]) -> Result<Summ
         Read::by_ref(&mut output)
             .take(4096)
             .read_to_end(&mut details)?;
-        let details = String::from_utf8_lossy(&details).to_ascii_lowercase();
-        if [
-            "not logged in",
-            "login required",
-            "not authenticated",
-            "copilot login",
-            "unauthorized",
-        ]
-        .iter()
-        .any(|notice| details.contains(notice))
-        {
-            bail!("Inicia sesión en {}.", provider.name());
-        }
-        bail!(
-            "{} no pudo generar el resumen. Revisa el acceso y los límites de tu plan.",
-            provider.name()
-        );
+        return Err(summary_failure(
+            provider,
+            &String::from_utf8_lossy(&details),
+        ));
     }
     let response = match provider {
         Provider::Codex => std::fs::read_to_string(&result_path)?,
-        Provider::Copilot => {
+        Provider::Copilot | Provider::Claude => {
             output.rewind()?;
             let mut response = String::new();
             output.take(1_048_576).read_to_string(&mut response)?;
             response
         }
+    };
+    let response = if provider == Provider::Claude {
+        let envelope: serde_json::Value = serde_json::from_str(&response)
+            .context("Claude Code devolvió una respuesta con formato no válido")?;
+        if envelope["is_error"].as_bool() == Some(true)
+            || envelope["subtype"].as_str() != Some("success")
+        {
+            return Err(summary_failure(provider, &response));
+        }
+        envelope
+            .get("structured_output")
+            .filter(|value| value.is_object())
+            .context(
+                "Claude Code no devolvió un resumen estructurado. Intenta generarlo de nuevo.",
+            )?
+            .to_string()
+    } else {
+        response
     };
     let response = response.trim();
     let response = response
@@ -298,6 +358,28 @@ pub(crate) fn summarize(provider: Provider, segments: &[Segment]) -> Result<Summ
         );
     }
     Ok(Summary { provider, content })
+}
+
+fn summary_failure(provider: Provider, details: &str) -> anyhow::Error {
+    let details = details.to_ascii_lowercase();
+    if [
+        "not logged in",
+        "login required",
+        "not authenticated",
+        "copilot login",
+        "unauthorized",
+        "authentication_failed",
+    ]
+    .iter()
+    .any(|notice| details.contains(notice))
+    {
+        anyhow::anyhow!("Inicia sesión en {}.", provider.name())
+    } else {
+        anyhow::anyhow!(
+            "{} no pudo generar el resumen. Revisa el acceso y los límites de tu plan.",
+            provider.name()
+        )
+    }
 }
 
 fn schema() -> serde_json::Value {

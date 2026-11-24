@@ -1,3 +1,4 @@
+mod agent_options;
 mod app;
 mod audio;
 mod library;
@@ -5,15 +6,38 @@ mod processing;
 
 use anyhow::Result;
 use gpui_kit::{
-    AppContext, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, px, size,
+    AppContext, AssetSource, Bounds, KeyBinding, SharedString, TitlebarOptions, WindowBounds,
+    WindowOptions,
+    assets::{Assets, icon_assets},
+    px, size,
 };
+use std::borrow::Cow;
+
+icon_assets!(AppIcons, [Pencil, Trash]);
+
+struct AppAssets;
+
+impl AssetSource for AppAssets {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if let Some(icon) = AppIcons.load(path)? {
+            return Ok(Some(icon));
+        }
+        Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut paths = Assets.list(path)?;
+        paths.extend(AppIcons.list(path)?);
+        Ok(paths)
+    }
+}
 
 fn main() -> Result<()> {
     let library = library::Library::open()?;
     let settings = library.settings()?;
     let meetings = library.meetings()?;
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             cx.bind_keys([KeyBinding::new(

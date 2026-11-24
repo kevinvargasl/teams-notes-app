@@ -19,4 +19,4 @@ block2 = "0.6"
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 tempfile = "3"
 objc2 = "0.6"
-time = "0.3"
+time = { version = "0.3", features = ["local-offset"] }

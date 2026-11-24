@@ -15,6 +15,7 @@ pub(crate) const MODEL_FILE: &str = "ggml-large-v3-turbo-q5_0.bin";
 pub(crate) enum Provider {
     Codex,
     Copilot,
+    Claude,
 }
 
 impl Provider {
@@ -22,6 +23,7 @@ impl Provider {
         match self {
             Self::Codex => "Codex",
             Self::Copilot => "GitHub Copilot",
+            Self::Claude => "Claude Code",
         }
     }
 
@@ -38,6 +40,7 @@ impl Provider {
         let name = match self {
             Self::Codex => "codex",
             Self::Copilot => "copilot",
+            Self::Claude => "claude",
         };
         paths.into_iter().map(|dir| dir.join(name)).find(|path| {
             use std::os::unix::fs::PermissionsExt;
@@ -55,6 +58,34 @@ pub(crate) struct Settings {
     pub(crate) dark: Option<bool>,
     pub(crate) provider: Option<Provider>,
     pub(crate) automatic: bool,
+    pub(crate) codex: AgentPreferences,
+    pub(crate) copilot: AgentPreferences,
+    pub(crate) claude: AgentPreferences,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct AgentPreferences {
+    pub(crate) model: Option<String>,
+    pub(crate) effort: Option<String>,
+}
+
+impl Settings {
+    pub(crate) fn agent(&self, provider: Provider) -> &AgentPreferences {
+        match provider {
+            Provider::Codex => &self.codex,
+            Provider::Copilot => &self.copilot,
+            Provider::Claude => &self.claude,
+        }
+    }
+
+    pub(crate) fn agent_mut(&mut self, provider: Provider) -> &mut AgentPreferences {
+        match provider {
+            Provider::Codex => &mut self.codex,
+            Provider::Copilot => &mut self.copilot,
+            Provider::Claude => &mut self.claude,
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -171,8 +202,12 @@ impl Library {
         write_json(&self.root.join("settings.json"), settings)
     }
 
+    pub(crate) fn meetings_dir(&self) -> PathBuf {
+        self.root.join("meetings")
+    }
+
     pub(crate) fn meeting_dir(&self, id: Uuid) -> PathBuf {
-        self.root.join("meetings").join(id.to_string())
+        self.meetings_dir().join(id.to_string())
     }
 
     pub(crate) fn model_path(&self) -> PathBuf {
@@ -181,7 +216,7 @@ impl Library {
 
     pub(crate) fn meetings(&self) -> Result<Vec<Meeting>> {
         let mut meetings = Vec::new();
-        for entry in fs::read_dir(self.root.join("meetings"))? {
+        for entry in fs::read_dir(self.meetings_dir())? {
             let path = entry?.path().join("meeting.json");
             if path.is_file() {
                 meetings.push(read_json::<Meeting>(&path)?);
@@ -209,11 +244,16 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    let temp = path.with_extension("tmp");
-    let mut writer = BufWriter::new(File::create(&temp)?);
-    serde_json::to_writer(&mut writer, value)?;
-    writer.flush()?;
-    writer.get_ref().sync_all()?;
-    fs::rename(temp, path)?;
+    let parent = path
+        .parent()
+        .context("No se encontró la carpeta de destino")?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    {
+        let mut writer = BufWriter::new(temp.as_file_mut());
+        serde_json::to_writer(&mut writer, value)?;
+        writer.flush()?;
+    }
+    temp.as_file().sync_all()?;
+    temp.persist(path)?;
     Ok(())
 }
