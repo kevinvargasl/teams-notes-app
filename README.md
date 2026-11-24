@@ -25,7 +25,7 @@ Está construida con **Rust y GPUI Kit**. La grabación y la transcripción se p
 | Microsoft Teams de escritorio | Fuente del audio de la reunión. |
 | CLI de Codex, GitHub Copilot o Claude Code | Opcional, para resúmenes y marcadores con IA. |
 
-La configuración de transcripción está orientada a Macs con **Apple Silicon y aceleración Metal**.
+La transcripción utiliza la GPU de tu Mac para acelerar el procesamiento.
 
 La captura está implementada para **Teams de escritorio en macOS**. No captura llamadas de Teams desde el navegador ni de otras aplicaciones.
 
@@ -84,8 +84,7 @@ Se utiliza el micrófono predeterminado de macOS. **Silenciarte en Teams no deti
 - Lista de reuniones con **nombre, fecha y hora locales de grabación y duración**.
 - Cambio de nombre mediante el icono de lápiz junto al título.
 - Eliminación con confirmación: borra el audio, la transcripción, el resumen y los marcadores de esa reunión.
-- Reordenación por **arrastrar y soltar**, con cursor de mano cerrada durante el arrastre.
-- Orden personalizado conservado entre sesiones.
+- Reordenación por **arrastrar y soltar**, el orden personalizado se conserva entre sesiones.
 - Búsqueda por **nombre de la reunión o contenido de la transcripción**.
 
 El buscador encuentra coincidencias parciales sin distinguir mayúsculas y minúsculas. No busca en resúmenes, marcadores ni fechas. Mientras haya una búsqueda activa, la reordenación queda deshabilitada, tanto por arrastre como por teclado.
@@ -96,7 +95,7 @@ El buscador encuentra coincidencias parciales sin distinguir mayúsculas y minú
 - Retroceder o avanzar **15 segundos**.
 - Cambiar la posición desde la barra de progreso, con actualización del tiempo durante el arrastre.
 - Saltar a un momento desde la transcripción, un marcador o una referencia del resumen.
-- Añadir marcadores en la posición actual, incluso estando en pausa o en **00:00 antes de reproducir**.
+- Añadir marcadores en la posición actual.
 
 ### Transcripción local
 
