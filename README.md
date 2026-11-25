@@ -11,6 +11,26 @@ Aplicación de escritorio para macOS que graba reuniones de Microsoft Teams en e
 
 La captura funciona con Teams de escritorio, no con Teams en el navegador ni con otras aplicaciones.
 
+## Descargar e instalar
+
+El ejecutable de la [versión 0.1.0](https://github.com/kevinvargasl/notes-app/releases/tag/0.1.0) es para Macs con Apple Silicon (M1 o posterior). No requiere Rust, Cargo ni herramientas de compilación.
+
+1. Descarga `Reuniones-0.1.0-macos-arm64.zip` desde los archivos de la release.
+2. Descomprime el ZIP y mueve `Reuniones.app` a **Aplicaciones**.
+3. Abre la app. Esta versión tiene firma local y no está notarizada por Apple.
+4. Si macOS bloquea la apertura por no verificar al desarrollador, ve a **Configuración del Sistema → Privacidad y seguridad**, pulsa **Abrir de todos modos** (o **Abrir igualmente**) y confirma con **Abrir**.
+
+Después de autorizarla, macOS guarda la app como excepción para las siguientes aperturas. [Instrucciones de Apple](https://support.apple.com/es-lamr/102445).
+
+### Permisos de grabación
+
+Al iniciar la primera grabación, permite el acceso al micrófono y al audio del sistema. Si lo denegaste, activa **Reuniones** en **Configuración del Sistema → Privacidad y seguridad**:
+
+- **Micrófono:** permite grabar tu voz.
+- **Grabación de pantalla y del audio del sistema:** permite capturar el audio de Teams. Si macOS ofrece permisos separados, basta con autorizar el audio del sistema; la app no graba la pantalla.
+
+Si macOS pide cerrar y volver a abrir la app para aplicar un permiso, hazlo antes de grabar. [Permisos de micrófono](https://support.apple.com/es-lamr/102071) y [audio del sistema](https://support.apple.com/es-es/guide/mac-help/mchld6aa7d23/mac).
+
 ## Compilar y ejecutar
 
 Desde la raíz del repositorio:
@@ -143,3 +163,7 @@ cargo fmt --check
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --all-targets --all-features --locked
 ```
+
+## Licencia
+
+[MIT](LICENSE). Permite usar, modificar y redistribuir el código, incluido el uso comercial, conservando el aviso de copyright y la licencia. Las dependencias mantienen sus propias licencias.

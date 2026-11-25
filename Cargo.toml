@@ -1,6 +1,7 @@
 [package]
 name = "notes-app"
 version = "0.1.0"
+license = "MIT"
 edition = "2024"
 build = "build.rs"
 
