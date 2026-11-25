@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::{
     agent_options::{self, AgentOptions, DEFAULT},
     audio::{self, Capture, Playback},
-    library::{Library, Marker, Meeting, Provider, Settings},
+    library::{Library, Marker, Meeting, Provider, Settings, TranscriptionMode},
     processing,
 };
 
@@ -29,13 +29,13 @@ actions!(reuniones, [AddMarker, MoveMeetingUp, MoveMeetingDown]);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
-    Summary,
     Transcript,
+    Summary,
     Markers,
 }
 
 impl Tab {
-    const ALL: [Self; 3] = [Self::Summary, Self::Transcript, Self::Markers];
+    const ALL: [Self; 3] = [Self::Transcript, Self::Summary, Self::Markers];
 
     fn label(self) -> &'static str {
         match self {
@@ -122,6 +122,7 @@ pub(crate) struct Workspace {
     selected: Option<Uuid>,
     tab: Tab,
     preferences: bool,
+    provider_installed: bool,
     codex_signed_in: Option<bool>,
     claude_signed_in: Option<bool>,
     model_select: Option<Entity<SelectState<SearchableVec<AgentChoice>>>>,
@@ -142,7 +143,8 @@ pub(crate) struct Workspace {
     errors: HashMap<Uuid, String>,
     notice: Option<String>,
     downloading: bool,
-    transcript_page: usize,
+    transcript_timestamps: bool,
+    transcript_viewports: Entity<HashMap<Uuid, view::TranscriptViewport>>,
     _subscriptions: [Subscription; 3],
 }
 
@@ -222,8 +224,9 @@ impl Workspace {
             settings,
             meetings,
             selected,
-            tab: Tab::Summary,
+            tab: Tab::Transcript,
             preferences: false,
+            provider_installed: false,
             codex_signed_in: None,
             claude_signed_in: None,
             model_select: None,
@@ -244,7 +247,8 @@ impl Workspace {
             errors: HashMap::new(),
             notice: None,
             downloading: false,
-            transcript_page: 0,
+            transcript_timestamps: true,
+            transcript_viewports: cx.new(|_| HashMap::new()),
             _subscriptions: [
                 search_subscription,
                 timeline_subscription,
@@ -319,8 +323,7 @@ impl Workspace {
         self.playback = None;
         self.reset_timeline(window, cx);
         self.selected = Some(id);
-        self.tab = Tab::Summary;
-        self.transcript_page = 0;
+        self.tab = Tab::Transcript;
         self.notice = None;
     }
 
@@ -448,7 +451,11 @@ impl Workspace {
     }
 
     fn download(&mut self, cx: &mut Context<Self>) {
-        if self.downloading || self.library.model_path().is_file() {
+        if self.downloading
+            || self
+                .library
+                .transcription_ready(self.settings.vad_enabled())
+        {
             return;
         }
         self.downloading = true;
@@ -459,7 +466,8 @@ impl Workspace {
                 .iter()
                 .any(|meeting| meeting.id == *id && meeting.transcript.is_none())
         });
-        let task = cx.background_spawn(async move { processing::download_model(&path) });
+        let use_vad = self.settings.vad_enabled();
+        let task = cx.background_spawn(async move { processing::download_model(&path, use_vad) });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
@@ -479,29 +487,79 @@ impl Workspace {
         cx.notify();
     }
 
+    fn request_transcript(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        if self.jobs.contains_key(&id) {
+            return;
+        }
+        let Some(meeting) = self.meetings.iter().find(|meeting| meeting.id == id) else {
+            return;
+        };
+        let mut description = String::from(
+            "Whisper volverá a procesar los audios guardados en tu Mac. La transcripción actual se reemplazará solo cuando termine correctamente. Los marcadores manuales se conservan.",
+        );
+        if meeting.summary.is_some() {
+            description.push_str(" El resumen actual, incluidas tus ediciones, se retirará porque sus referencias pueden cambiar.");
+        }
+        if self.settings.automatic && self.settings.provider.is_some() {
+            description.push_str(" Se generará un nuevo resumen automáticamente.");
+        }
+        let weak = cx.weak_entity();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let weak = weak.clone();
+            dialog
+                .confirm()
+                .title("¿Volver a generar la transcripción?")
+                .description(description.clone())
+                .ok_text("Volver a generar")
+                .cancel_text("Cancelar")
+                .footer(view::confirmation_footer(
+                    "Volver a generar",
+                    ButtonVariant::Primary,
+                ))
+                .on_ok(move |_, _, cx| {
+                    let _ = weak.update(cx, |this, cx| this.start_transcript(id, cx));
+                    true
+                })
+        });
+    }
+
     fn start_transcript(&mut self, id: Uuid, cx: &mut Context<Self>) {
         if self.jobs.contains_key(&id) {
             return;
         }
         let directory = self.library.meeting_dir(id);
         let model = self.library.model_path();
-        if !model.is_file() || !directory.join(audio::TEAMS_FILE).is_file() {
+        if !self
+            .library
+            .transcription_ready(self.settings.vad_enabled())
+            || !directory.join(audio::TEAMS_FILE).is_file()
+        {
             return;
         }
         self.jobs.insert(id, Work::Transcribing);
         self.errors.remove(&id);
-        let task = cx.background_spawn(async move { processing::transcribe(&directory, &model) });
+        let mode = self.settings.transcription_mode;
+        let use_vad = self.settings.vad_enabled();
+        let task = cx.background_spawn(async move {
+            processing::transcribe(&directory, &model, mode, use_vad)
+        });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
                 this.jobs.remove(&id);
                 let result = result.and_then(|segments| {
                     this.update_meeting(id, |meeting| {
+                        if meeting.transcript.is_some() {
+                            meeting.summary = None;
+                        }
                         meeting.transcript = Some(segments);
                     })
                 });
                 match result {
                     Ok(()) => {
+                        this.transcript_viewports.update(cx, |viewports, _| {
+                            viewports.remove(&id);
+                        });
                         if let Some(provider) = this.settings.provider {
                             if this.settings.automatic {
                                 this.start_summary(
@@ -731,10 +789,12 @@ impl Workspace {
     }
 
     fn check_provider(&mut self, cx: &mut Context<Self>) {
+        let executable = self.settings.provider.and_then(Provider::executable);
+        self.provider_installed = executable.is_some();
         let Some(provider @ (Provider::Codex | Provider::Claude)) = self.settings.provider else {
             return;
         };
-        let Some(path) = provider.executable() else {
+        let Some(path) = executable else {
             return;
         };
         let task = cx.background_spawn(async move {
@@ -970,6 +1030,29 @@ impl Workspace {
         });
     }
 
+    fn set_vad_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let mut settings = self.settings.clone();
+        settings.vad_enabled = Some(enabled);
+        match self.library.save_settings(&settings) {
+            Ok(()) => self.settings = settings,
+            Err(error) => self.report(error),
+        }
+        cx.notify();
+    }
+
+    fn set_transcription_mode(&mut self, mode: TranscriptionMode, cx: &mut Context<Self>) {
+        if self.settings.transcription_mode == mode {
+            return;
+        }
+        let mut settings = self.settings.clone();
+        settings.transcription_mode = mode;
+        match self.library.save_settings(&settings) {
+            Ok(()) => self.settings = settings,
+            Err(error) => self.report(error),
+        }
+        cx.notify();
+    }
+
     fn set_theme(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.dark = Some(dark);
         theme::apply(Some(dark), window, cx);
@@ -1050,7 +1133,7 @@ impl Workspace {
             let reset = input.clone();
             dialog.confirm()
                 .title(title)
-                .description("Personaliza el enfoque, el nivel de detalle y el idioma. Se aplicará a las próximas generaciones manuales y automáticas.")
+                .description("Personaliza el enfoque y el nivel de detalle. Se aplicará a las próximas generaciones manuales y automáticas.")
                 .child(Textarea::new(&input))
                 .ok_text("Guardar")
                 .cancel_text("Cancelar")
@@ -1122,6 +1205,45 @@ impl Workspace {
         });
     }
 
+    fn delete_marker(
+        &self,
+        id: Uuid,
+        marker_id: Uuid,
+        label: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let weak = cx.weak_entity();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let weak = weak.clone();
+            dialog
+                .confirm()
+                .title(format!("¿Eliminar el marcador «{label}»?"))
+                .description("El audio y la transcripción se conservarán.")
+                .ok_text("Eliminar")
+                .ok_variant(ButtonVariant::Danger)
+                .footer(view::confirmation_footer("Eliminar", ButtonVariant::Danger))
+                .cancel_text("Cancelar")
+                .on_ok(move |_, _, cx| {
+                    weak.update(cx, |this, cx| {
+                        if this.jobs.get(&id) == Some(&Work::GeneratingMarkers) {
+                            return false;
+                        }
+                        let result = this.update_meeting(id, |meeting| {
+                            meeting.markers.retain(|marker| marker.id != marker_id);
+                        });
+                        let saved = result.is_ok();
+                        if let Err(error) = result {
+                            this.report(error);
+                        }
+                        cx.notify();
+                        saved
+                    })
+                    .unwrap_or(false)
+                })
+        });
+    }
+
     fn delete(&self, id: Uuid, title: String, window: &mut Window, cx: &mut Context<Self>) {
         let weak = cx.weak_entity();
         window.open_alert_dialog(cx, move |dialog, _, _| {
@@ -1148,9 +1270,11 @@ impl Workspace {
                         this.reset_timeline(window, cx);
                         this.meetings.retain(|meeting| meeting.id != id);
                         this.errors.remove(&id);
+                        this.transcript_viewports.update(cx, |viewports, _| {
+                            viewports.remove(&id);
+                        });
                         this.selected = this.meetings.first().map(|meeting| meeting.id);
-                        this.tab = Tab::Summary;
-                        this.transcript_page = 0;
+                        this.tab = Tab::Transcript;
                         cx.notify();
                         true
                     })
@@ -1260,7 +1384,11 @@ impl Workspace {
                             && let Some((id, result)) = this.complete_save()
                         {
                             match result {
-                                Ok(()) if this.library.model_path().is_file() => {
+                                Ok(())
+                                    if this
+                                        .library
+                                        .transcription_ready(this.settings.vad_enabled()) =>
+                                {
                                     this.start_transcript(id, cx)
                                 }
                                 Ok(()) => {

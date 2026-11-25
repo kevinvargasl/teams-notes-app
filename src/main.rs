@@ -6,14 +6,28 @@ mod processing;
 
 use anyhow::Result;
 use gpui_kit::{
-    AppContext, AssetSource, Bounds, KeyBinding, SharedString, TitlebarOptions, WindowBounds,
-    WindowOptions,
+    AppContext, AssetSource, Bounds, KeyBinding, QuitMode, SharedString, TitlebarOptions,
+    WindowBounds, WindowOptions,
     assets::{Assets, icon_assets},
     px, size,
 };
 use std::borrow::Cow;
 
-icon_assets!(AppIcons, [Pencil, Trash, BookmarkPlus, Sun, Moon, Check]);
+icon_assets!(
+    AppIcons,
+    [
+        Pencil,
+        Trash,
+        BookmarkPlus,
+        Sun,
+        Moon,
+        Check,
+        CircleCheck,
+        ListTodo,
+        CircleQuestionMark,
+        ArrowUpToLine
+    ]
+);
 
 struct AppAssets;
 
@@ -38,6 +52,7 @@ fn main() -> Result<()> {
     let meetings = library.meetings()?;
     gpui_kit::application()
         .with_assets(AppAssets)
+        .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx| {
             gpui_kit::init(cx);
             cx.bind_keys([

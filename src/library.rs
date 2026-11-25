@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
 pub(crate) const MODEL_FILE: &str = "ggml-large-v3-turbo-q5_0.bin";
+pub(crate) const VAD_MODEL_FILE: &str = "ggml-silero-v5.1.2.bin";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum Provider {
@@ -52,6 +53,13 @@ impl Provider {
     }
 }
 
+#[derive(Clone, Copy, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum TranscriptionMode {
+    Greedy,
+    #[default]
+    BeamSearch,
+}
+
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct Settings {
@@ -59,6 +67,8 @@ pub(crate) struct Settings {
     pub(crate) provider: Option<Provider>,
     pub(crate) automatic: bool,
     pub(crate) automatic_markers: bool,
+    pub(crate) transcription_mode: TranscriptionMode,
+    pub(crate) vad_enabled: Option<bool>,
     pub(crate) summary_prompt: Option<String>,
     pub(crate) markers_prompt: Option<String>,
     pub(crate) codex: AgentPreferences,
@@ -75,6 +85,10 @@ pub(crate) struct AgentPreferences {
 }
 
 impl Settings {
+    pub(crate) fn vad_enabled(&self) -> bool {
+        self.vad_enabled.unwrap_or(true)
+    }
+
     pub(crate) fn agent(&self, provider: Provider) -> &AgentPreferences {
         match provider {
             Provider::Codex => &self.codex,
@@ -141,15 +155,6 @@ pub(crate) struct Marker {
 pub(crate) enum AudioSource {
     Mic,
     Teams,
-}
-
-impl AudioSource {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Mic => "Tú",
-            Self::Teams => "Teams",
-        }
-    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -224,6 +229,14 @@ impl Library {
 
     pub(crate) fn model_path(&self) -> PathBuf {
         self.root.join(MODEL_FILE)
+    }
+
+    pub(crate) fn vad_model_path(&self) -> PathBuf {
+        self.root.join(VAD_MODEL_FILE)
+    }
+
+    pub(crate) fn transcription_ready(&self, use_vad: bool) -> bool {
+        self.model_path().is_file() && (!use_vad || self.vad_model_path().is_file())
     }
 
     pub(crate) fn meetings(&self) -> Result<Vec<Meeting>> {

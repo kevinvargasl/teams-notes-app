@@ -4,11 +4,13 @@ use std::time::Duration;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Selectable, Sizable, ThemeMode,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
+    collapsible::Collapsible,
     dialog::{DialogAction, DialogClose, DialogFooter},
     h_flex,
     input::Input,
     kbd::Kbd,
-    scroll::ScrollableElement,
+    scroll::{ScrollableElement, Scrollbar},
     select::Select,
     slider::{Slider, SliderValue},
     switch::Switch,
@@ -17,8 +19,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AppContext, Context, CursorStyle, Div, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div,
-    prelude::FluentBuilder, rems,
+    ListAlignment, ListOffset, ListState, ParentElement, Pixels, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, list, prelude::FluentBuilder, rems,
 };
 use uuid::Uuid;
 
@@ -26,9 +28,16 @@ use super::{
     AddMarker, Edit, MoveMeetingDown, MoveMeetingUp, PlaybackCommand, PromptKind, Tab, Work,
     Workspace,
 };
-use crate::library::{Meeting, Provider};
+use crate::library::{Meeting, Provider, Segment, TranscriptionMode};
 
-const SEGMENTS_PER_PAGE: usize = 100;
+const TRANSCRIPT_NOTICE: &str =
+    "Transcripción generada con IA. Puede contener errores; consulta el audio para verificarla.";
+
+pub(super) struct TranscriptViewport {
+    list: ListState,
+    timestamps: bool,
+    rem_size: Pixels,
+}
 
 #[derive(Clone)]
 struct MeetingDrag {
@@ -94,7 +103,7 @@ impl Render for Workspace {
                     .child(if self.preferences {
                         self.preferences_view(window, cx).into_any_element()
                     } else if let Some(meeting) = selected {
-                        self.detail(meeting, cx).into_any_element()
+                        self.detail(meeting, window, cx).into_any_element()
                     } else {
                         v_flex()
                             .flex_1()
@@ -342,7 +351,7 @@ impl Workspace {
     fn preferences_view(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let dark = cx.theme().mode == ThemeMode::Dark;
         let provider = self.settings.provider;
-        let installed = provider.is_some_and(|provider| provider.executable().is_some());
+        let installed = self.provider_installed;
         let ready = installed
             && match provider {
                 Some(Provider::Codex) => self.codex_signed_in == Some(true),
@@ -361,7 +370,7 @@ impl Workspace {
             Some(_) => "Usa la sesión iniciada en la terminal.".into(),
             None => "Elige la herramienta que usas en la terminal.".into(),
         };
-        let content = v_flex().w_full().max_w(rems(44.)).gap_5()
+        let content = v_flex().w_full().max_w(rems(44.)).mx_auto().gap_5()
             .child(div().text_xl().font_semibold().child("Configuración"))
             .child(h_flex().gap_4()
                 .child(div().flex_1().child(settings_heading("Apariencia")))
@@ -447,14 +456,36 @@ impl Workspace {
                     .child(v_flex().flex_1().min_w_0().gap_1()
                         .child(section("Español · Whisper"))
                         .child(muted("Se procesa en tu Mac, sin enviar el audio.", cx).text_xs()))
-                    .child(if self.library.model_path().is_file() {
+                    .child(if self.library.transcription_ready(self.settings.vad_enabled()) {
                         h_flex().gap_2().py_1()
                             .child(Icon::default().path("icons/check.svg").size_4()
                                 .text_color(cx.theme().muted_foreground))
-                            .child(muted("Modelo instalado", cx)).into_any_element()
+                            .child(muted("Listo para transcribir", cx)).into_any_element()
                     } else {
                         self.whisper_settings(cx).into_any_element()
+                    }))
+                .child(settings_toggle("Detección de voz (VAD)",
+                    "Omite silencios antes de transcribir. Puede hacer que la transcripción tarde más.",
+                    Switch::new("transcription-vad").cursor_pointer()
+                        .checked(self.settings.vad_enabled())
+                        .on_change(cx.listener(|this, enabled, _, cx| this.set_vad_enabled(*enabled, cx))), cx))
+                .child(v_flex().gap_2()
+                    .child(section("Modo de transcripción"))
+                    .child(h_flex().flex_wrap().gap_2().children([
+                        ("Greedy", TranscriptionMode::Greedy),
+                        ("Beam Search", TranscriptionMode::BeamSearch),
+                    ].map(|(label, mode)| {
+                        let selected = self.settings.transcription_mode == mode;
+                        regular_button(label).outline()
+                            .label(label)
+                            .selected(selected)
+                            .when(selected, |button| button
+                                .bg(cx.theme().transparent).text_color(cx.theme().primary)
+                                .border_color(cx.theme().primary))
+                            .on_click(cx.listener(move |this, _, _, cx| this.set_transcription_mode(mode, cx)))
                     })))
+                    .child(muted("Greedy prioriza la velocidad. Beam Search explora más alternativas y puede tardar más.", cx).text_xs())
+                    .child(muted("El modo y la detección de voz se aplican a las próximas transcripciones y regeneraciones.", cx).text_xs())))
             .child(settings_group("Grabación y archivos", cx)
                 .child(v_flex().gap_1()
                     .child(section("Micrófono"))
@@ -479,12 +510,19 @@ impl Workspace {
     }
 
     fn whisper_settings(&self, cx: &Context<Self>) -> impl IntoElement {
-        if self.library.model_path().is_file() {
-            muted("Modelo de Whisper instalado.", cx).into_any_element()
+        if self
+            .library
+            .transcription_ready(self.settings.vad_enabled())
+        {
+            muted("Listo para transcribir.", cx).into_any_element()
         } else {
             regular_button("download-model")
                 .label(if self.downloading {
-                    "Descargando Whisper…"
+                    "Descargando modelos…"
+                } else if self.library.model_path().is_file() {
+                    "Descargar detección de voz"
+                } else if self.settings.vad_enabled() {
+                    "Descargar modelos (548 MiB)"
                 } else {
                     "Descargar Whisper (547 MiB)"
                 })
@@ -494,7 +532,12 @@ impl Workspace {
         }
     }
 
-    fn detail(&self, meeting: &Meeting, cx: &Context<Self>) -> impl IntoElement {
+    fn detail(
+        &self,
+        meeting: &Meeting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let id = meeting.id;
         let title = meeting.title.clone();
         let delete_title = title.clone();
@@ -568,32 +611,41 @@ impl Workspace {
                     .child(self.player(meeting, cx)),
             )
             .child(
-                TabBar::new("meeting-tabs")
-                    .underline()
-                    .px_4()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .children(
-                        Tab::ALL.map(|tab| TabItem::new().label(tab.label()).cursor_pointer()),
+                v_flex()
+                    .w_full()
+                    .max_w(rems(56.))
+                    .mx_auto()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        TabBar::new("meeting-tabs")
+                            .underline()
+                            .px_4()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .children(
+                                Tab::ALL
+                                    .map(|tab| TabItem::new().label(tab.label()).cursor_pointer()),
+                            )
+                            .selected_index(
+                                Tab::ALL
+                                    .iter()
+                                    .position(|tab| *tab == self.tab)
+                                    .unwrap_or_default(),
+                            )
+                            .on_click(cx.listener(|this, index: &usize, _, cx| {
+                                if let Some(tab) = Tab::ALL.get(*index) {
+                                    this.tab = *tab;
+                                    cx.notify();
+                                }
+                            })),
                     )
-                    .selected_index(
-                        Tab::ALL
-                            .iter()
-                            .position(|tab| *tab == self.tab)
-                            .unwrap_or_default(),
-                    )
-                    .on_click(cx.listener(|this, index: &usize, _, cx| {
-                        if let Some(tab) = Tab::ALL.get(*index) {
-                            this.tab = *tab;
-                            cx.notify();
-                        }
-                    })),
+                    .child(match self.tab {
+                        Tab::Summary => self.summary(meeting, window, cx).into_any_element(),
+                        Tab::Transcript => self.transcript(meeting, window, cx).into_any_element(),
+                        Tab::Markers => self.markers(meeting, cx).into_any_element(),
+                    }),
             )
-            .child(match self.tab {
-                Tab::Summary => self.summary(meeting, cx).into_any_element(),
-                Tab::Transcript => self.transcript(meeting, cx).into_any_element(),
-                Tab::Markers => self.markers(meeting, cx).into_any_element(),
-            })
     }
 
     fn player(&self, meeting: &Meeting, cx: &Context<Self>) -> impl IntoElement {
@@ -681,7 +733,12 @@ impl Workspace {
             )
     }
 
-    fn summary(&self, meeting: &Meeting, cx: &Context<Self>) -> impl IntoElement {
+    fn summary(
+        &self,
+        meeting: &Meeting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let id = meeting.id;
         let work = self.jobs.get(&id);
         let empty_transcript = meeting.transcript.as_ref().is_some_and(Vec::is_empty);
@@ -728,19 +785,22 @@ impl Workspace {
                 ("Preguntas abiertas", &summary.content.questions),
             ] {
                 if !items.is_empty() {
-                    content = content.child(section(heading));
+                    let mut rows = v_flex().gap_6();
                     for item in items {
-                        content = content.child(self.summary_item(
+                        rows = rows.child(self.summary_item(
                             meeting,
+                            heading,
                             item.text.clone(),
                             &item.segment_ids,
+                            window,
                             cx,
                         ));
                     }
+                    content = content.child(summary_section(heading, rows, cx));
                 }
             }
             if !summary.content.actions.is_empty() {
-                content = content.child(section("Tareas"));
+                let mut rows = v_flex().gap_6();
                 for item in &summary.content.actions {
                     let mut text = item.text.clone();
                     if let Some(owner) = &item.owner {
@@ -749,9 +809,16 @@ impl Workspace {
                     if let Some(deadline) = &item.deadline {
                         text.push_str(&format!(" · {deadline}"));
                     }
-                    content =
-                        content.child(self.summary_item(meeting, text, &item.segment_ids, cx));
+                    rows = rows.child(self.summary_item(
+                        meeting,
+                        "Tareas",
+                        text,
+                        &item.segment_ids,
+                        window,
+                        cx,
+                    ));
                 }
+                content = content.child(summary_section("Tareas", rows, cx));
             }
         } else if empty_transcript {
             content = content.child(muted("Whisper no detectó diálogo en esta grabación.", cx));
@@ -785,103 +852,224 @@ impl Workspace {
     fn summary_item(
         &self,
         meeting: &Meeting,
+        section: &str,
         text: String,
         ids: &[usize],
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
-        let links = h_flex()
-            .flex_wrap()
-            .gap_2()
-            .children(ids.iter().filter_map(|id| {
-                let segment = meeting.transcript.as_ref()?.get(id.checked_sub(1)?)?;
-                Some(self.jump(
-                    meeting.id,
-                    format!("reference-{}", segment.id),
-                    segment.start_ms,
-                    cx,
-                ))
-            }));
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<Div> {
+        let key = SharedString::from(format!(
+            "summary-item-{}-{section}-{text}-{ids:?}",
+            meeting.id
+        ));
+        let expanded = window.use_keyed_state(
+            SharedString::from(format!("{key}-references")),
+            cx,
+            |_, _| false,
+        );
+        let open = *expanded.read(cx);
+        let segments: Vec<_> = ids
+            .iter()
+            .filter_map(|id| meeting.transcript.as_ref()?.get(id.checked_sub(1)?))
+            .collect();
+        let reference = |segment: &Segment| {
+            self.jump(
+                meeting.id,
+                format!("reference-{}", segment.id),
+                segment.start_ms,
+                cx,
+            )
+            .ghost()
+            .font_normal()
+            .font_family(cx.theme().mono_font_family.clone())
+            .text_color(cx.theme().muted_foreground)
+            .accessibility_label(format!(
+                "Escuchar referencia en {}",
+                timestamp(segment.start_ms)
+            ))
+            .tooltip("Escuchar referencia")
+        };
+        let mut controls = h_flex().flex_wrap().gap_2();
+        if let Some(first) = segments.first() {
+            controls = controls.child(reference(first));
+        }
+        if segments.len() > 1 {
+            let count = segments.len() - 1;
+            controls = controls.child(
+                compact_button("toggle-references")
+                    .ghost()
+                    .font_normal()
+                    .text_color(cx.theme().muted_foreground)
+                    .label(if open {
+                        "Ocultar referencias".into()
+                    } else if count == 1 {
+                        "+1 referencia".into()
+                    } else {
+                        format!("+{count} referencias")
+                    })
+                    .selected(open)
+                    .when(open, |button| {
+                        button
+                            .bg(cx.theme().transparent)
+                            .text_color(cx.theme().primary)
+                    })
+                    .on_click(move |_, _, cx| {
+                        expanded.update(cx, |open, cx| {
+                            *open = !*open;
+                            cx.notify();
+                        })
+                    }),
+            );
+        }
         v_flex()
-            .id(SharedString::from(format!("summary-item-{text}-{ids:?}")))
+            .id(key)
             .gap_1()
             .child(selectable_text("summary-item-text", text))
-            .child(links)
+            .when(!segments.is_empty(), |view| {
+                view.child(
+                    Collapsible::new()
+                        .open(open)
+                        .gap_1()
+                        .child(controls)
+                        .content(
+                            h_flex().flex_wrap().gap_2().children(
+                                segments.iter().skip(1).map(|segment| reference(segment)),
+                            ),
+                        ),
+                )
+            })
     }
 
-    fn transcript(&self, meeting: &Meeting, cx: &Context<Self>) -> impl IntoElement {
-        let mut content = pane(SharedString::from(format!(
-            "transcript-{}-{}",
-            meeting.id, self.transcript_page
-        )));
-        if let Some(segments) = &meeting.transcript {
-            if segments.is_empty() {
-                content = content.child(muted("Whisper no detectó diálogo en esta grabación.", cx));
-            } else {
-                let pages = segments.len().div_ceil(SEGMENTS_PER_PAGE);
-                let page = self.transcript_page.min(pages - 1);
-                if pages > 1 {
-                    content = content.child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                compact_button("prev-segments")
-                                    .label("Anterior")
-                                    .disabled(page == 0)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.transcript_page =
-                                            this.transcript_page.saturating_sub(1);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(muted(format!("Página {} de {pages}", page + 1), cx))
-                            .child(
-                                compact_button("next-segments")
-                                    .label("Siguiente")
-                                    .disabled(page + 1 == pages)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.transcript_page += 1;
-                                        cx.notify();
-                                    })),
-                            ),
-                    );
+    fn transcript(
+        &self,
+        meeting: &Meeting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = meeting.id;
+        if let Some(segments) = &meeting.transcript
+            && !segments.is_empty()
+        {
+            let mut start = 0;
+            let ranges: Vec<_> = transcript_paragraphs(segments)
+                .map(|paragraph| {
+                    let range = start..start + paragraph.len();
+                    start = range.end;
+                    range
+                })
+                .collect();
+            let count = ranges.len();
+            let timestamps = self.transcript_timestamps;
+            let rem_size = window.rem_size();
+            let list_state = self.transcript_viewports.update(cx, |viewports, _| {
+                let viewport = viewports.entry(id).or_insert_with(|| TranscriptViewport {
+                    list: ListState::new(count, ListAlignment::Top, rem_size * 12.),
+                    timestamps,
+                    rem_size,
+                });
+                if viewport.list.item_count() != count {
+                    viewport.list.reset(count);
+                } else if viewport.timestamps != timestamps || viewport.rem_size != rem_size {
+                    viewport.list.remeasure();
                 }
-                content = content.children(
-                    segments
-                        .iter()
-                        .skip(page * SEGMENTS_PER_PAGE)
-                        .take(SEGMENTS_PER_PAGE)
-                        .map(|segment| {
+                viewport.timestamps = timestamps;
+                viewport.rem_size = rem_size;
+                viewport.list.clone()
+            });
+            let scroll_to_top = list_state.clone();
+            let id = meeting.id;
+            return v_flex()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    h_flex()
+                        .items_start()
+                        .px_4()
+                        .py_3()
+                        .gap_3()
+                        .child(muted(TRANSCRIPT_NOTICE, cx).text_xs().flex_1().min_w_0())
+                        .child(
                             h_flex()
-                                .items_start()
                                 .gap_3()
-                                .py_2()
-                                .border_b_1()
-                                .border_color(cx.theme().border)
-                                .child(self.jump(
-                                    meeting.id,
-                                    format!("segment-{}", segment.id),
-                                    segment.start_ms,
-                                    cx,
-                                ))
+                                .flex_shrink_0()
                                 .child(
-                                    v_flex()
-                                        .min_w_0()
-                                        .flex_1()
-                                        .gap_1()
-                                        .child(muted(segment.source.label(), cx))
-                                        .child(selectable_text(
-                                            SharedString::from(format!(
-                                                "transcript-text-{}-{}",
-                                                meeting.id, segment.id
-                                            )),
-                                            segment.text.clone(),
-                                        )),
+                                    Checkbox::new("transcript-timestamps")
+                                        .label("Mostrar tiempos")
+                                        .checked(timestamps)
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, checked, _, cx| {
+                                            this.transcript_timestamps = *checked;
+                                            cx.notify();
+                                        })),
                                 )
-                        }),
-                );
-            }
+                                .child(self.regenerate_transcript_button(id, cx))
+                                .child(
+                                    icon_button(
+                                        "transcript-top",
+                                        "icons/arrow-up-to-line.svg",
+                                        "Volver arriba",
+                                    )
+                                    .ghost()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .on_click(cx.listener(
+                                        move |_, _, _, cx| {
+                                            scroll_to_top.scroll_to(ListOffset::default());
+                                            cx.notify();
+                                        },
+                                    )),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .child(
+                            list(
+                                list_state.clone(),
+                                cx.processor(move |this, index: usize, _, cx| {
+                                    let paragraph = this
+                                        .meetings
+                                        .iter()
+                                        .find(|meeting| meeting.id == id)
+                                        .and_then(|meeting| meeting.transcript.as_ref())
+                                        .and_then(|segments| segments.get(ranges[index].clone()));
+                                    match paragraph {
+                                        Some(paragraph) => this
+                                            .transcript_paragraph(id, paragraph, cx)
+                                            .into_any_element(),
+                                        None => div().into_any_element(),
+                                    }
+                                }),
+                            )
+                            .size_full()
+                            .p_4(),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .child(Scrollbar::vertical(&list_state).viewport_from_layout()),
+                        ),
+                )
+                .into_any_element();
+        }
+        let mut content = pane(SharedString::from(format!("transcript-{}", meeting.id)));
+        if meeting.transcript.is_some() {
+            content = content
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .child(muted(TRANSCRIPT_NOTICE, cx).text_xs().flex_1().min_w_0())
+                        .child(self.regenerate_transcript_button(id, cx)),
+                )
+                .child(muted("Whisper no detectó diálogo en esta grabación.", cx));
         } else if !self.jobs.contains_key(&meeting.id) {
-            if self.library.model_path().is_file() {
+            if self
+                .library
+                .transcription_ready(self.settings.vad_enabled())
+            {
                 let id = meeting.id;
                 content = content.child(
                     regular_button("transcribe-meeting")
@@ -891,13 +1079,65 @@ impl Workspace {
             } else {
                 content = content
                     .child(muted(
-                        "Descarga el modelo para transcribir esta reunión.",
+                        "Descarga los modelos para transcribir esta reunión.",
                         cx,
                     ))
                     .child(self.whisper_settings(cx));
             }
         }
-        content.overflow_y_scrollbar()
+        content.overflow_y_scrollbar().into_any_element()
+    }
+
+    fn regenerate_transcript_button(&self, id: Uuid, cx: &Context<Self>) -> Button {
+        icon_button(
+            "regenerate-transcript",
+            "icons/refresh-cw.svg",
+            "Volver a generar la transcripción…",
+        )
+        .ghost()
+        .disabled(
+            self.jobs.contains_key(&id)
+                || !self
+                    .library
+                    .transcription_ready(self.settings.vad_enabled()),
+        )
+        .on_click(cx.listener(move |this, _, window, cx| this.request_transcript(id, window, cx)))
+    }
+
+    fn transcript_paragraph(&self, id: Uuid, paragraph: &[Segment], cx: &Context<Self>) -> Div {
+        let first = &paragraph[0];
+        let text = paragraph
+            .iter()
+            .map(|segment| segment.text.trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        v_flex()
+            .w_full()
+            .gap_1()
+            .pb_6()
+            .when(self.transcript_timestamps, |content| {
+                content.child(
+                    self.jump(id, format!("paragraph-{}", first.id), first.start_ms, cx)
+                        .ghost()
+                        .self_start()
+                        .px_0()
+                        .font_normal()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_color(cx.theme().primary)
+                        .accessibility_label(format!(
+                            "Reproducir desde {}",
+                            timestamp(first.start_ms)
+                        ))
+                        .tooltip("Reproducir desde este párrafo"),
+                )
+            })
+            .child(
+                selectable_text(
+                    SharedString::from(format!("transcript-text-{id}-{}", first.id)),
+                    text,
+                )
+                .line_height(rems(1.5)),
+            )
     }
 
     fn markers(&self, meeting: &Meeting, cx: &Context<Self>) -> impl IntoElement {
@@ -906,10 +1146,22 @@ impl Workspace {
             && !self.starting
             && meeting.duration_ms > 0
             && self.jobs.get(&id) != Some(&Work::Saving);
+        let count = meeting.markers.len();
         pane("markers")
             .child(
                 h_flex()
                     .gap_2()
+                    .child(
+                        muted(
+                            if count == 1 {
+                                "1 marcador".into()
+                            } else {
+                                format!("{count} marcadores")
+                            },
+                            cx,
+                        )
+                        .flex_1(),
+                    )
                     .child(
                         icon_button(
                             "mark-playback",
@@ -962,9 +1214,16 @@ impl Workspace {
             .children(meeting.markers.iter().map(|marker| {
                 let marker_id = marker.id;
                 let label = marker.label.clone();
+                let delete_label = label.clone();
                 h_flex()
+                    .id(SharedString::from(format!("marker-row-{marker_id}")))
                     .gap_2()
-                    .child(self.jump(id, format!("marker-{marker_id}"), marker.ms, cx))
+                    .rounded(cx.theme().radius)
+                    .hover(|row| row.bg(cx.theme().muted))
+                    .child(
+                        self.jump(id, format!("marker-{marker_id}"), marker.ms, cx)
+                            .flex_shrink_0(),
+                    )
                     .child(div().min_w_0().truncate().child(label.clone()))
                     .child(
                         icon_button(
@@ -978,6 +1237,22 @@ impl Workspace {
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
                                 this.edit(Edit::Marker(id, marker_id), label.clone(), window, cx)
+                            },
+                        )),
+                    )
+                    .child(
+                        icon_button(
+                            SharedString::from(format!("delete-marker-{marker_id}")),
+                            "icons/trash.svg",
+                            "Eliminar marcador…",
+                        )
+                        .ghost()
+                        .text_color(cx.theme().muted_foreground)
+                        .flex_shrink_0()
+                        .disabled(self.jobs.get(&id) == Some(&Work::GeneratingMarkers))
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.delete_marker(id, marker_id, delete_label.clone(), window, cx)
                             },
                         )),
                     )
@@ -998,6 +1273,36 @@ impl Workspace {
                 this.play(id, PlaybackCommand::Jump(position), window, cx)
             }))
     }
+}
+
+fn transcript_paragraphs(segments: &[Segment]) -> impl Iterator<Item = &[Segment]> {
+    let mut remaining = segments;
+    std::iter::from_fn(move || {
+        let first = remaining.first()?;
+        let mut count = 0;
+        let mut length = 0;
+        let mut end_ms = first.end_ms;
+        let mut sentence_ended = false;
+        for segment in remaining {
+            // Keep nearby fragments together, breaking at pauses or readable sentence boundaries.
+            if count > 0
+                && (segment.start_ms > end_ms.saturating_add(2_000)
+                    || segment.start_ms.saturating_sub(first.start_ms) >= 30_000
+                    || length >= 600
+                    || (length >= 240 && sentence_ended))
+            {
+                break;
+            }
+            let text = segment.text.trim();
+            length += text.chars().count() + 1;
+            end_ms = end_ms.max(segment.end_ms);
+            sentence_ended = text.ends_with(['.', '!', '?', '…']);
+            count += 1;
+        }
+        let (paragraph, rest) = remaining.split_at(count);
+        remaining = rest;
+        Some(paragraph)
+    })
 }
 
 fn selectable_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Div {
@@ -1052,6 +1357,32 @@ fn icon_button(id: impl Into<ElementId>, icon: &'static str, label: &'static str
 
 fn pane(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::Stateful<Div> {
     v_flex().id(id).flex_1().min_h_0().gap_3().p_4()
+}
+
+fn summary_section(title: &'static str, rows: Div, cx: &Context<Workspace>) -> Div {
+    let icon = match title {
+        "Decisiones" => "icons/circle-check.svg",
+        "Tareas" => "icons/list-todo.svg",
+        _ => "icons/circle-question-mark.svg",
+    };
+    v_flex()
+        .pt_4()
+        .gap_4()
+        .child(
+            h_flex()
+                .gap_2()
+                .pb_2()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(
+                    Icon::default()
+                        .path(icon)
+                        .size_5()
+                        .text_color(cx.theme().primary),
+                )
+                .child(section(title).text_base().text_color(cx.theme().foreground)),
+        )
+        .child(rows)
 }
 
 fn section(text: impl Into<SharedString>) -> Div {
