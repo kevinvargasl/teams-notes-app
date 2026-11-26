@@ -4,14 +4,16 @@ mod audio;
 mod library;
 mod processing;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use gpui_kit::{
-    AppContext, AssetSource, Bounds, KeyBinding, QuitMode, SharedString, TitlebarOptions,
-    WindowBounds, WindowOptions,
+    AppContext, AssetSource, Bounds, KeyBinding, Menu, MenuItem, QuitMode, SharedString,
+    TitlebarOptions, WindowBounds, WindowOptions,
     assets::{Assets, icon_assets},
     px, size,
 };
 use std::borrow::Cow;
+
+gpui_kit::actions!(reuniones, [Quit]);
 
 icon_assets!(
     AppIcons,
@@ -25,7 +27,11 @@ icon_assets!(
         CircleCheck,
         ListTodo,
         CircleQuestionMark,
-        ArrowUpToLine
+        ArrowUpToLine,
+        Search,
+        ChevronUp,
+        ChevronDown,
+        X
     ]
 );
 
@@ -55,10 +61,30 @@ fn main() -> Result<()> {
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx| {
             gpui_kit::init(cx);
+            if let Err(error) = set_app_icon() {
+                eprintln!("No se pudo cargar el icono de Reuniones: {error:#}");
+            }
             cx.bind_keys([
+                KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-shift-m", app::AddMarker, Some("Reuniones")),
+                KeyBinding::new("cmd-f", app::FindTranscript, Some("Reuniones")),
+                KeyBinding::new("cmd-g", app::NextTranscriptMatch, Some("Reuniones")),
+                KeyBinding::new(
+                    "cmd-shift-g",
+                    app::PreviousTranscriptMatch,
+                    Some("Reuniones"),
+                ),
+                KeyBinding::new(
+                    "escape",
+                    gpui_kit::component::input::Escape,
+                    Some("TranscriptSearch"),
+                ),
                 KeyBinding::new("cmd-alt-up", app::MoveMeetingUp, Some("MeetingRow")),
                 KeyBinding::new("cmd-alt-down", app::MoveMeetingDown, Some("MeetingRow")),
+            ]);
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.set_menus([
+                Menu::new("Reuniones").items([MenuItem::action("Salir de Reuniones", Quit)])
             ]);
             let bounds = Bounds::centered(None, size(px(1000.), px(720.)), cx);
             let options = WindowOptions {
@@ -80,5 +106,21 @@ fn main() -> Result<()> {
             }
             cx.activate(true);
         });
+    Ok(())
+}
+
+fn set_app_icon() -> Result<()> {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let main_thread = MainThreadMarker::new().context("El icono requiere el hilo principal")?;
+    let data = NSData::with_bytes(include_bytes!("../assets/AppIcon.icns"));
+    let image = NSImage::initWithData(NSImage::alloc(), &data)
+        .context("El archivo del icono no es válido")?;
+    // SAFETY: The image is valid and non-null, and AppKit runs on the main thread.
+    unsafe {
+        NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&image));
+    }
     Ok(())
 }

@@ -25,7 +25,17 @@ use crate::{
     processing,
 };
 
-actions!(reuniones, [AddMarker, MoveMeetingUp, MoveMeetingDown]);
+actions!(
+    reuniones,
+    [
+        AddMarker,
+        MoveMeetingUp,
+        MoveMeetingDown,
+        FindTranscript,
+        NextTranscriptMatch,
+        PreviousTranscriptMatch
+    ]
+);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -131,6 +141,10 @@ pub(crate) struct Workspace {
     options_loading: bool,
     options_revision: u64,
     search: Entity<InputState>,
+    transcript_search: Entity<InputState>,
+    transcript_search_open: bool,
+    transcript_matches: Vec<view::TranscriptMatch>,
+    transcript_match_index: usize,
     focus: FocusHandle,
     capture: Option<(Meeting, Capture)>,
     pending_save: Option<(Uuid, audio::FinishedCapture)>,
@@ -145,7 +159,7 @@ pub(crate) struct Workspace {
     downloading: bool,
     transcript_timestamps: bool,
     transcript_viewports: Entity<HashMap<Uuid, view::TranscriptViewport>>,
-    _subscriptions: [Subscription; 3],
+    _subscriptions: [Subscription; 4],
 }
 
 impl Workspace {
@@ -172,6 +186,17 @@ impl Workspace {
             }
         });
         let timeline = cx.new(|_| SliderState::new().max(1000.).step(1.));
+        let transcript_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Buscar en la transcripción"));
+        let transcript_search_subscription = cx.subscribe_in(
+            &transcript_search,
+            window,
+            |this, _, event, _, cx| match event {
+                InputEvent::Change => this.refresh_transcript_search(cx),
+                InputEvent::PressEnter { shift, .. } => this.move_transcript_match(*shift, cx),
+                _ => {}
+            },
+        );
         let timeline_subscription = cx.subscribe_in(
             &timeline,
             window,
@@ -235,6 +260,10 @@ impl Workspace {
             options_loading: false,
             options_revision: 0,
             search,
+            transcript_search,
+            transcript_search_open: false,
+            transcript_matches: Vec::new(),
+            transcript_match_index: 0,
             focus,
             capture: None,
             pending_save: None,
@@ -253,7 +282,79 @@ impl Workspace {
                 search_subscription,
                 timeline_subscription,
                 quit_subscription,
+                transcript_search_subscription,
             ],
+        }
+    }
+
+    fn find_transcript(&mut self, _: &FindTranscript, window: &mut Window, cx: &mut Context<Self>) {
+        if self.preferences
+            || self.tab != Tab::Transcript
+            || !self.selected_meeting().is_some_and(|meeting| {
+                meeting
+                    .transcript
+                    .as_ref()
+                    .is_some_and(|segments| !segments.is_empty())
+            })
+        {
+            cx.propagate();
+            return;
+        }
+        self.transcript_search_open = true;
+        self.transcript_search.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+        self.refresh_transcript_search(cx);
+    }
+
+    fn close_transcript_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.transcript_search_open {
+            self.transcript_search_open = false;
+            self.transcript_matches.clear();
+            self.focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn refresh_transcript_search(&mut self, cx: &mut Context<Self>) {
+        self.transcript_matches = self
+            .selected_meeting()
+            .and_then(|meeting| meeting.transcript.as_deref())
+            .map(|segments| {
+                view::transcript_matches(segments, self.transcript_search.read(cx).value().as_ref())
+            })
+            .unwrap_or_default();
+        self.transcript_match_index = 0;
+        self.reveal_transcript_match(cx);
+        cx.notify();
+    }
+
+    fn move_transcript_match(&mut self, previous: bool, cx: &mut Context<Self>) {
+        if self.preferences || self.tab != Tab::Transcript {
+            cx.propagate();
+            return;
+        }
+        if !self.transcript_search_open || self.transcript_matches.is_empty() {
+            return;
+        }
+        let count = self.transcript_matches.len();
+        self.transcript_match_index = if previous {
+            (self.transcript_match_index + count - 1) % count
+        } else {
+            (self.transcript_match_index + 1) % count
+        };
+        self.reveal_transcript_match(cx);
+        cx.notify();
+    }
+
+    fn reveal_transcript_match(&self, cx: &Context<Self>) {
+        if let Some(found) = self.transcript_matches.get(self.transcript_match_index)
+            && let Some(viewport) = self
+                .selected
+                .and_then(|id| self.transcript_viewports.read(cx).get(&id))
+        {
+            viewport.reveal(found.paragraph);
         }
     }
 
@@ -320,6 +421,7 @@ impl Workspace {
         if self.selected == Some(id) {
             return;
         }
+        self.close_transcript_search(window, cx);
         self.playback = None;
         self.reset_timeline(window, cx);
         self.selected = Some(id);
@@ -560,6 +662,9 @@ impl Workspace {
                         this.transcript_viewports.update(cx, |viewports, _| {
                             viewports.remove(&id);
                         });
+                        if this.selected == Some(id) && this.transcript_search_open {
+                            this.refresh_transcript_search(cx);
+                        }
                         if let Some(provider) = this.settings.provider {
                             if this.settings.automatic {
                                 this.start_summary(
@@ -1268,6 +1373,7 @@ impl Workspace {
                         }
                         this.playback = None;
                         this.reset_timeline(window, cx);
+                        this.close_transcript_search(window, cx);
                         this.meetings.retain(|meeting| meeting.id != id);
                         this.errors.remove(&id);
                         this.transcript_viewports.update(cx, |viewports, _| {

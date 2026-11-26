@@ -1,5 +1,5 @@
 use gpui_kit::base::{SelectableText, StyledExt};
-use std::time::Duration;
+use std::{ops::Range, time::Duration};
 
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Selectable, Sizable, ThemeMode,
@@ -18,15 +18,15 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AppContext, Context, CursorStyle, Div, ElementId, InteractiveElement, IntoElement,
-    ListAlignment, ListOffset, ListState, ParentElement, Pixels, Render, SharedString,
+    AppContext, Context, CursorStyle, Div, ElementId, HighlightStyle, InteractiveElement,
+    IntoElement, ListAlignment, ListOffset, ListState, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Window, div, list, prelude::FluentBuilder, rems,
 };
 use uuid::Uuid;
 
 use super::{
-    AddMarker, Edit, MoveMeetingDown, MoveMeetingUp, PlaybackCommand, PromptKind, Tab, Work,
-    Workspace,
+    AddMarker, Edit, FindTranscript, MoveMeetingDown, MoveMeetingUp, NextTranscriptMatch,
+    PlaybackCommand, PreviousTranscriptMatch, PromptKind, Tab, Work, Workspace,
 };
 use crate::library::{Meeting, Provider, Segment, TranscriptionMode};
 
@@ -37,6 +37,20 @@ pub(super) struct TranscriptViewport {
     list: ListState,
     timestamps: bool,
     rem_size: Pixels,
+}
+
+impl TranscriptViewport {
+    pub(super) fn reveal(&self, paragraph: usize) {
+        self.list.scroll_to(ListOffset {
+            item_ix: paragraph,
+            ..Default::default()
+        });
+    }
+}
+
+pub(super) struct TranscriptMatch {
+    pub(super) paragraph: usize,
+    range: Range<usize>,
 }
 
 #[derive(Clone)]
@@ -74,6 +88,13 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .key_context("Reuniones")
             .on_action(cx.listener(Self::add_marker))
+            .on_action(cx.listener(Self::find_transcript))
+            .on_action(cx.listener(|this, _: &NextTranscriptMatch, _, cx| {
+                this.move_transcript_match(false, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PreviousTranscriptMatch, _, cx| {
+                this.move_transcript_match(true, cx)
+            }))
             .child(self.toolbar(cx))
             .when_some(self.notice.clone(), |view, notice| {
                 view.child(
@@ -962,10 +983,19 @@ impl Workspace {
             let timestamps = self.transcript_timestamps;
             let rem_size = window.rem_size();
             let list_state = self.transcript_viewports.update(cx, |viewports, _| {
-                let viewport = viewports.entry(id).or_insert_with(|| TranscriptViewport {
-                    list: ListState::new(count, ListAlignment::Top, rem_size * 12.),
-                    timestamps,
-                    rem_size,
+                let viewport = viewports.entry(id).or_insert_with(|| {
+                    let viewport = TranscriptViewport {
+                        list: ListState::new(count, ListAlignment::Top, rem_size * 12.),
+                        timestamps,
+                        rem_size,
+                    };
+                    if self.transcript_search_open
+                        && let Some(found) =
+                            self.transcript_matches.get(self.transcript_match_index)
+                    {
+                        viewport.reveal(found.paragraph);
+                    }
+                    viewport
                 });
                 if viewport.list.item_count() != count {
                     viewport.list.reset(count);
@@ -1005,6 +1035,19 @@ impl Workspace {
                                 .child(self.regenerate_transcript_button(id, cx))
                                 .child(
                                     icon_button(
+                                        "find-transcript",
+                                        "icons/search.svg",
+                                        "Buscar en la transcripción · ⌘F",
+                                    )
+                                    .ghost()
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| {
+                                            this.find_transcript(&FindTranscript, window, cx)
+                                        },
+                                    )),
+                                )
+                                .child(
+                                    icon_button(
                                         "transcript-top",
                                         "icons/arrow-up-to-line.svg",
                                         "Volver arriba",
@@ -1020,6 +1063,9 @@ impl Workspace {
                                 ),
                         ),
                 )
+                .when(self.transcript_search_open, |view| {
+                    view.child(self.transcript_search_bar(cx))
+                })
                 .child(
                     div()
                         .relative()
@@ -1037,7 +1083,7 @@ impl Workspace {
                                         .and_then(|segments| segments.get(ranges[index].clone()));
                                     match paragraph {
                                         Some(paragraph) => this
-                                            .transcript_paragraph(id, paragraph, cx)
+                                            .transcript_paragraph(id, index, paragraph, cx)
                                             .into_any_element(),
                                         None => div().into_any_element(),
                                     }
@@ -1104,13 +1150,100 @@ impl Workspace {
         .on_click(cx.listener(move |this, _, window, cx| this.request_transcript(id, window, cx)))
     }
 
-    fn transcript_paragraph(&self, id: Uuid, paragraph: &[Segment], cx: &Context<Self>) -> Div {
+    fn transcript_search_bar(&self, cx: &Context<Self>) -> Div {
+        let count = self.transcript_matches.len();
+        let counter = if self.transcript_search.read(cx).value().trim().is_empty() {
+            String::new()
+        } else if count == 0 {
+            "Sin coincidencias".into()
+        } else {
+            format!("{} de {count}", self.transcript_match_index + 1)
+        };
+        h_flex()
+            .key_context("TranscriptSearch")
+            .on_action(
+                cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
+                    this.close_transcript_search(window, cx)
+                }),
+            )
+            .px_4()
+            .pb_3()
+            .gap_2()
+            .child(
+                Input::new(&self.transcript_search)
+                    .aria_label("Buscar en la transcripción")
+                    .cleanable(true)
+                    .flex_1()
+                    .min_w_0(),
+            )
+            .child(muted(counter, cx).text_xs().flex_shrink_0())
+            .child(
+                icon_button(
+                    "previous-transcript-match",
+                    "icons/chevron-up.svg",
+                    "Coincidencia anterior · ⇧Enter",
+                )
+                .ghost()
+                .disabled(count == 0)
+                .on_click(cx.listener(|this, _, _, cx| this.move_transcript_match(true, cx))),
+            )
+            .child(
+                icon_button(
+                    "next-transcript-match",
+                    "icons/chevron-down.svg",
+                    "Coincidencia siguiente · Enter",
+                )
+                .ghost()
+                .disabled(count == 0)
+                .on_click(cx.listener(|this, _, _, cx| this.move_transcript_match(false, cx))),
+            )
+            .child(
+                icon_button(
+                    "close-transcript-search",
+                    "icons/x.svg",
+                    "Cerrar búsqueda · Esc",
+                )
+                .ghost()
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.close_transcript_search(window, cx)),
+                ),
+            )
+    }
+
+    fn transcript_paragraph(
+        &self,
+        id: Uuid,
+        index: usize,
+        paragraph: &[Segment],
+        cx: &Context<Self>,
+    ) -> Div {
         let first = &paragraph[0];
-        let text = paragraph
+        let text = paragraph_text(paragraph);
+        let highlights = self
+            .transcript_matches
             .iter()
-            .map(|segment| segment.text.trim())
-            .collect::<Vec<_>>()
-            .join(" ");
+            .enumerate()
+            .filter(|(_, found)| self.transcript_search_open && found.paragraph == index)
+            .map(|(position, found)| {
+                (
+                    found.range.clone(),
+                    HighlightStyle {
+                        background_color: Some(cx.theme().primary.opacity(
+                            if position == self.transcript_match_index {
+                                1.
+                            } else {
+                                0.2
+                            },
+                        )),
+                        color: Some(if position == self.transcript_match_index {
+                            cx.theme().primary_foreground
+                        } else {
+                            cx.theme().foreground
+                        }),
+                        ..Default::default()
+                    },
+                )
+            });
         v_flex()
             .w_full()
             .gap_1()
@@ -1132,11 +1265,16 @@ impl Workspace {
                 )
             })
             .child(
-                selectable_text(
-                    SharedString::from(format!("transcript-text-{id}-{}", first.id)),
-                    text,
-                )
-                .line_height(rems(1.5)),
+                div()
+                    .cursor_text()
+                    .child(
+                        SelectableText::new(
+                            SharedString::from(format!("transcript-text-{id}-{}", first.id)),
+                            text,
+                        )
+                        .highlights(highlights),
+                    )
+                    .line_height(rems(1.5)),
             )
     }
 
@@ -1273,6 +1411,44 @@ impl Workspace {
                 this.play(id, PlaybackCommand::Jump(position), window, cx)
             }))
     }
+}
+
+fn paragraph_text(segments: &[Segment]) -> String {
+    segments
+        .iter()
+        .map(|segment| segment.text.trim())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub(super) fn transcript_matches(segments: &[Segment], query: &str) -> Vec<TranscriptMatch> {
+    let query: Vec<_> = query.trim().chars().collect();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut matches = Vec::new();
+    for (paragraph, segments) in transcript_paragraphs(segments).enumerate() {
+        let text = paragraph_text(segments);
+        let chars: Vec<_> = text.char_indices().collect();
+        let mut start = 0;
+        while start + query.len() <= chars.len() {
+            if query
+                .iter()
+                .zip(&chars[start..start + query.len()])
+                .all(|(needle, (_, character))| needle.to_lowercase().eq(character.to_lowercase()))
+            {
+                let (end, character) = chars[start + query.len() - 1];
+                matches.push(TranscriptMatch {
+                    paragraph,
+                    range: chars[start].0..end + character.len_utf8(),
+                });
+                start += query.len();
+            } else {
+                start += 1;
+            }
+        }
+    }
+    matches
 }
 
 fn transcript_paragraphs(segments: &[Segment]) -> impl Iterator<Item = &[Segment]> {
@@ -1448,4 +1624,60 @@ fn settings_toggle(
                 .child(muted(description, cx).text_xs()),
         )
         .child(switch.accessibility_label(title).flex_shrink_0())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::transcript_matches;
+    use crate::library::{AudioSource, Segment};
+
+    fn segment(text: &str, start_ms: u64) -> Segment {
+        Segment {
+            id: 1,
+            start_ms,
+            end_ms: start_ms + 1_000,
+            source: AudioSource::Teams,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn transcript_search_preserves_utf8_ranges_and_counts_repeated_matches() {
+        let text = "İndice: REUNIÓN, reunión y reunión.";
+        let matches = transcript_matches(&[segment(text, 0)], "REUNIÓN");
+        assert_eq!(
+            matches
+                .iter()
+                .map(|found| &text[found.range.clone()])
+                .collect::<Vec<_>>(),
+            ["REUNIÓN", "reunión", "reunión"]
+        );
+    }
+
+    #[test]
+    fn transcript_search_uses_the_displayed_paragraph_text_across_segments() {
+        let segments = [
+            segment("  revisar el ", 0),
+            segment(" presupuesto ", 1_000),
+            segment("presupuesto", 50_000),
+        ];
+        let matches = transcript_matches(&segments, "el presupuesto");
+        assert_eq!(
+            matches
+                .iter()
+                .map(|found| (found.paragraph, found.range.clone()))
+                .collect::<Vec<_>>(),
+            [(0, 8..22)]
+        );
+    }
+
+    #[test]
+    fn transcript_search_treats_special_characters_literally_and_ignores_empty_queries() {
+        let segments = [segment("Versión (1.0): [pendiente]", 0)];
+        assert_eq!(
+            [" ", "ausente", "(1.0)", "[pendiente]"]
+                .map(|query| transcript_matches(&segments, query).len()),
+            [0, 0, 1, 1]
+        );
+    }
 }

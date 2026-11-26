@@ -11,8 +11,10 @@ esac
 
 target_dir=${CARGO_TARGET_DIR:-target}
 bundle="$target_dir/Reuniones.app"
-mkdir -p "$bundle/Contents/MacOS"
+mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 cp Info.plist "$bundle/Contents/Info.plist"
 cp "$target_dir/$profile/notes-app" "$bundle/Contents/MacOS/notes-app"
+cp assets/AppIcon.icns "$bundle/Contents/Resources/AppIcon.icns"
+cp LICENSE "$bundle/Contents/Resources/LICENSE"
 codesign --force --sign - "$bundle"
 printf '%s\n' "$bundle"

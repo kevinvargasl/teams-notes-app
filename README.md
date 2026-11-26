@@ -13,9 +13,9 @@ La captura funciona con Teams de escritorio, no con Teams en el navegador ni con
 
 ## Descargar e instalar
 
-El ejecutable de la [versión 0.1.0](https://github.com/kevinvargasl/notes-app/releases/tag/0.1.0) es para Macs con Apple Silicon (M1 o posterior). No requiere Rust, Cargo ni herramientas de compilación.
+El ejecutable de la [versión 0.1.1](https://github.com/kevinvargasl/teams-notes-app/releases/tag/0.1.1) es para Macs con Apple Silicon (M1 o posterior). No requiere Rust, Cargo ni herramientas de compilación.
 
-1. Descarga `Reuniones-0.1.0-macos-arm64.zip` desde los archivos de la release.
+1. Descarga `Reuniones-0.1.1-macos-arm64.zip` desde los archivos de la release.
 2. Descomprime el ZIP y mueve `Reuniones.app` a **Aplicaciones**.
 3. Abre la app. Esta versión tiene firma local y no está notarizada por Apple.
 4. Si macOS bloquea la apertura por no verificar al desarrollador, ve a **Configuración del Sistema → Privacidad y seguridad**, pulsa **Abrir de todos modos** (o **Abrir igualmente**) y confirma con **Abrir**.
@@ -90,6 +90,7 @@ El buscador no filtra resúmenes, marcadores ni fechas. La reordenación se desa
 - Uso de la GPU del Mac mediante Metal para acelerar el procesamiento.
 - Lectura en párrafos con texto seleccionable, scroll continuo y botón para volver arriba.
 - Tiempos por párrafo para saltar al audio, con opción de ocultarlos.
+- Búsqueda con `⌘F`, resaltado de coincidencias y navegación con `Enter` y `Mayús+Enter`.
 - Regeneración desde los audios guardados, con confirmación. La transcripción anterior se conserva si el proceso falla.
 
 Las pistas de micrófono y Teams se transcriben por separado y se combinan en orden cronológico. No se identifica a cada participante. La transcripción puede contener errores; consulta el audio para verificarla.
@@ -129,7 +130,11 @@ Las preferencias se conservan entre sesiones. Los cambios de instrucciones, modo
 
 | Atajo | Acción |
 | --- | --- |
+| `⌘Q` | Salir de Reuniones. |
 | `⌘⇧M` | Añadir un marcador durante la grabación o en la posición actual del audio. |
+| `⌘F` | Abrir el buscador de la transcripción. |
+| `⌘G` / `⌘⇧G` | Ir a la siguiente o anterior coincidencia. |
+| `Esc` | Cerrar el buscador de la transcripción. |
 | `⌘⌥↑` | Subir la reunión enfocada en la lista. |
 | `⌘⌥↓` | Bajar la reunión enfocada en la lista. |
 
