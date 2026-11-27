@@ -31,6 +31,8 @@ icon_assets!(
         Search,
         ChevronUp,
         ChevronDown,
+        Mic,
+        MicOff,
         X
     ]
 );

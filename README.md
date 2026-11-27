@@ -64,6 +64,7 @@ La grabación se inicia y se detiene manualmente; la app no detecta el final de 
 - Captura simultánea del micrófono y del audio de Teams, también con auriculares.
 - Pistas separadas y sincronizadas, más una mezcla para reproducirlas juntas.
 - Pausa, reanudación, contador de tiempo e indicadores de señal.
+- Botón de micrófono junto a pausa y detener, con icono tachado al silenciar. Solo silencia tu voz en la grabación; no cambia el micrófono de macOS ni de Teams.
 - Avisos si no hay señal o se interrumpe la captura.
 - Guardado del audio pendiente al salir de la aplicación.
 

@@ -71,6 +71,7 @@ pub(crate) struct Capture {
     _tap: ProcessTap,
     clock: Arc<Clock>,
     mic_signal: Arc<Signal>,
+    mic_muted: Arc<AtomicBool>,
     teams_signal: Arc<Signal>,
     end: Arc<AtomicU32>,
     writer: Option<JoinHandle<Result<()>>>,
@@ -117,10 +118,20 @@ impl Capture {
             .context("No se encontró un micrófono. Revisa la entrada de sonido en macOS.")?;
         let clock = Arc::new(Clock::default());
         let mic_signal = Arc::new(Signal::default());
+        let mic_muted = Arc::new(AtomicBool::new(false));
         let teams_signal = Arc::new(Signal::default());
-        let (mut mic, mic_input) = input(mic_device, clock.clone(), mic_signal.clone())?;
-        let (mut teams, teams_input) =
-            input(aggregate.device(), clock.clone(), teams_signal.clone())?;
+        let (mut mic, mic_input) = input(
+            mic_device,
+            clock.clone(),
+            mic_signal.clone(),
+            Some(mic_muted.clone()),
+        )?;
+        let (mut teams, teams_input) = input(
+            aggregate.device(),
+            clock.clone(),
+            teams_signal.clone(),
+            None,
+        )?;
 
         let mic_file = wav(&directory.join(MIC_FILE))?;
         let teams_file = wav(&directory.join(TEAMS_FILE))?;
@@ -152,6 +163,7 @@ impl Capture {
             _tap: tap,
             clock,
             mic_signal,
+            mic_muted,
             teams_signal,
             end,
             writer: Some(writer),
@@ -164,6 +176,14 @@ impl Capture {
 
     pub(crate) fn is_paused(&self) -> bool {
         self.clock.paused_at.load(Relaxed) != 0
+    }
+
+    pub(crate) fn is_mic_muted(&self) -> bool {
+        self.mic_muted.load(Relaxed)
+    }
+
+    pub(crate) fn toggle_mic_mute(&self) {
+        self.mic_muted.fetch_xor(true, Relaxed);
     }
 
     pub(crate) fn toggle_pause(&self) {
@@ -194,6 +214,9 @@ impl Capture {
                 "Sin señal"
             }
         });
+        if self.is_mic_muted() {
+            signals[0] = "Silenciado";
+        }
         if matches!(self.mic_device.get_property(DEVICE_IS_ALIVE), Ok(false)) {
             signals[0] = "Desconectado";
         }
@@ -255,6 +278,7 @@ fn input(
     device: AudioObject<Device>,
     clock: Arc<Clock>,
     signal: Arc<Signal>,
+    muted: Option<Arc<AtomicBool>>,
 ) -> Result<(IOProc, Consumer<AudioBlock>)> {
     let input_rate = device.get_property(DEVICE_NOMINAL_SAMPLE_RATE)?;
     ensure!(
@@ -295,6 +319,7 @@ fn input(
             offset
         };
         let count = (frames as f64 * scale).round() as usize;
+        let is_muted = muted.as_ref().is_some_and(|muted| muted.load(Relaxed));
         next = start + count as u64;
         for begin in (0..count).step_by(BLOCK_SAMPLES) {
             let len = (count - begin).min(BLOCK_SAMPLES);
@@ -319,7 +344,9 @@ fn input(
                 if pcm.abs() > 0.003 {
                     signal.last_voice.store(time, Relaxed);
                 }
-                *sample = (pcm.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+                if !is_muted {
+                    *sample = (pcm.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+                }
             }
             if producer.push(block).is_err() {
                 signal.dropped.store(true, Relaxed);

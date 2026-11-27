@@ -175,6 +175,32 @@ impl Workspace {
                         })),
                 )
                 .child(
+                    icon_button(
+                        "mute-record-mic",
+                        if active.is_mic_muted() {
+                            "icons/mic-off.svg"
+                        } else {
+                            "icons/mic.svg"
+                        },
+                        if active.is_mic_muted() {
+                            "Activar micrófono en la grabación"
+                        } else {
+                            "Silenciar micrófono en la grabación"
+                        },
+                    )
+                    .ghost()
+                    .selected(active.is_mic_muted())
+                    .when(active.is_mic_muted(), |button| {
+                        button.text_color(cx.theme().button_danger)
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some((_, capture)) = this.capture.as_ref() {
+                            capture.toggle_mic_mute();
+                        }
+                        cx.notify();
+                    })),
+                )
+                .child(
                     if active.is_paused() {
                         icon_button("pause-record", "icons/play.svg", "Reanudar grabación")
                     } else {
