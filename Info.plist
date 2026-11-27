@@ -5,8 +5,8 @@
     <key>CFBundleIdentifier</key><string>app.meeting-notes.desktop</string>
     <key>CFBundleName</key><string>Reuniones</string>
     <key>CFBundleIconFile</key><string>AppIcon.icns</string>
-    <key>CFBundleShortVersionString</key><string>0.1.1</string>
-    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleShortVersionString</key><string>0.1.2</string>
+    <key>CFBundleVersion</key><string>3</string>
     <key>LSMinimumSystemVersion</key><string>14.2</string>
     <key>CFBundleExecutable</key><string>notes-app</string>
     <key>CFBundlePackageType</key><string>APPL</string>

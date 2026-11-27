@@ -13,9 +13,9 @@ La captura funciona con Teams de escritorio, no con Teams en el navegador ni con
 
 ## Descargar e instalar
 
-El ejecutable de la [versión 0.1.1](https://github.com/kevinvargasl/teams-notes-app/releases/tag/0.1.1) es para Macs con Apple Silicon (M1 o posterior). No requiere Rust, Cargo ni herramientas de compilación.
+El ejecutable de la [versión 0.1.2](https://github.com/kevinvargasl/teams-notes-app/releases/tag/0.1.2) es para Macs con Apple Silicon (M1 o posterior). No requiere Rust, Cargo ni herramientas de compilación.
 
-1. Descarga `Reuniones-0.1.1-macos-arm64.zip` desde los archivos de la release.
+1. Descarga `Reuniones-0.1.2-macos-arm64.zip` desde los archivos de la release.
 2. Descomprime el ZIP y mueve `Reuniones.app` a **Aplicaciones**.
 3. Abre la app. Esta versión tiene firma local y no está notarizada por Apple.
 4. Si macOS bloquea la apertura por no verificar al desarrollador, ve a **Configuración del Sistema → Privacidad y seguridad**, pulsa **Abrir de todos modos** (o **Abrir igualmente**) y confirma con **Abrir**.
