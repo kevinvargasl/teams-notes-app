@@ -60,7 +60,7 @@ pub(crate) enum TranscriptionMode {
     BeamSearch,
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) dark: Option<bool>,
@@ -69,12 +69,33 @@ pub(crate) struct Settings {
     pub(crate) automatic_markers: bool,
     pub(crate) transcription_mode: TranscriptionMode,
     pub(crate) vad_enabled: Option<bool>,
+    pub(crate) noise_reduction: bool,
     pub(crate) summary_prompt: Option<String>,
     pub(crate) markers_prompt: Option<String>,
     pub(crate) codex: AgentPreferences,
     pub(crate) copilot: AgentPreferences,
     pub(crate) claude: AgentPreferences,
     pub(crate) meeting_order: Vec<Uuid>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            dark: None,
+            provider: None,
+            automatic: false,
+            automatic_markers: false,
+            transcription_mode: TranscriptionMode::default(),
+            vad_enabled: None,
+            noise_reduction: true,
+            summary_prompt: None,
+            markers_prompt: None,
+            codex: AgentPreferences::default(),
+            copilot: AgentPreferences::default(),
+            claude: AgentPreferences::default(),
+            meeting_order: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -86,7 +107,7 @@ pub(crate) struct AgentPreferences {
 
 impl Settings {
     pub(crate) fn vad_enabled(&self) -> bool {
-        self.vad_enabled.unwrap_or(true)
+        self.vad_enabled.unwrap_or(false)
     }
 
     pub(crate) fn agent(&self, provider: Provider) -> &AgentPreferences {
@@ -281,4 +302,23 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     temp.as_file().sync_all()?;
     temp.persist(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn noise_reduction_defaults_on_and_preserves_saved_choice() {
+        assert!(Settings::default().noise_reduction);
+        let mut settings: Settings =
+            serde_json::from_str(r#"{"dark":true,"automatic":true}"#).unwrap();
+        assert!(settings.noise_reduction);
+        settings.noise_reduction = false;
+        let saved = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&saved).unwrap();
+        assert!(!restored.noise_reduction);
+        assert_eq!(restored.dark, Some(true));
+        assert!(restored.automatic);
+    }
 }

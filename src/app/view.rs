@@ -132,7 +132,14 @@ impl Render for Workspace {
                             .p_6()
                             .gap_2()
                             .child(div().text_lg().font_semibold().child("Tus reuniones"))
-                            .child(muted("Abre una llamada en Teams y selecciona Grabar.", cx))
+                            .child(muted(
+                                if self.meetings.is_empty() {
+                                    "Abre una llamada en Teams y selecciona Grabar."
+                                } else {
+                                    "Selecciona una reunión de la lista para ver su contenido."
+                                },
+                                cx,
+                            ))
                             .into_any_element()
                     }),
             )
@@ -306,7 +313,7 @@ impl Workspace {
                                 })
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select(id, window, cx);
+                                this.select((!selected).then_some(id), window, cx);
                                 cx.notify();
                             }));
                     v_flex()
@@ -537,6 +544,11 @@ impl Workspace {
                 .child(v_flex().gap_1()
                     .child(section("Micrófono"))
                     .child(muted("Se usa la entrada predeterminada de macOS. Silenciarte en Teams no detiene la grabación de tu voz.", cx).text_xs()))
+                .child(settings_toggle("Reducir ruido del micrófono",
+                    "Filtra el ruido de fondo en tu grabación. Se aplica a las próximas grabaciones.",
+                    Switch::new("microphone-noise-reduction")
+                        .checked(self.settings.noise_reduction).cursor_pointer()
+                        .on_change(cx.listener(|this, enabled, _, cx| this.set_noise_reduction(*enabled, cx))), cx))
                 .child(h_flex().gap_4()
                     .child(div().flex_1().child("Añadir marcador durante la grabación"))
                     .when_some(Kbd::binding_for_action(&AddMarker, Some("Reuniones"), window), |row, shortcut| row.child(shortcut)))

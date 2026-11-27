@@ -178,7 +178,6 @@ impl Workspace {
             .map(|(index, id)| (*id, index + 1))
             .collect();
         meetings.sort_by_key(|meeting| ranks.get(&meeting.id).copied().unwrap_or(0));
-        let selected = meetings.first().map(|meeting| meeting.id);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Buscar reuniones"));
         let search_subscription = cx.subscribe_in(&search, window, |_, _, event, _, cx| {
             if matches!(event, InputEvent::Change) {
@@ -248,7 +247,7 @@ impl Workspace {
             library,
             settings,
             meetings,
-            selected,
+            selected: None,
             tab: Tab::Transcript,
             preferences: false,
             provider_installed: false,
@@ -416,15 +415,15 @@ impl Workspace {
         }
     }
 
-    fn select(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+    fn select(&mut self, id: Option<Uuid>, window: &mut Window, cx: &mut Context<Self>) {
         self.preferences = false;
-        if self.selected == Some(id) {
+        if self.selected == id {
             return;
         }
         self.close_transcript_search(window, cx);
         self.playback = None;
         self.reset_timeline(window, cx);
-        self.selected = Some(id);
+        self.selected = id;
         self.tab = Tab::Transcript;
         self.notice = None;
     }
@@ -447,7 +446,7 @@ impl Workspace {
                     meeting.recording_warning = Some("La grabación se interrumpió antes de finalizar.".into());
                     let directory = this.library.meeting_dir(meeting.id);
                     std::fs::create_dir_all(&directory)?;
-                    let result = Capture::start(directory).and_then(|capture| {
+                    let result = Capture::start(directory, this.settings.noise_reduction).and_then(|capture| {
                         this.library.save_meeting(&meeting)?;
                         Ok(capture)
                     });
@@ -517,7 +516,7 @@ impl Workspace {
     fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.stop_capture() {
             Ok(Some(id)) => {
-                self.select(id, window, cx);
+                self.select(Some(id), window, cx);
                 self.ensure_ticker(window, cx);
             }
             Ok(None) => return,
@@ -1133,6 +1132,16 @@ impl Workspace {
                     true
                 })
         });
+    }
+
+    fn set_noise_reduction(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let mut settings = self.settings.clone();
+        settings.noise_reduction = enabled;
+        match self.library.save_settings(&settings) {
+            Ok(()) => self.settings = settings,
+            Err(error) => self.report(error),
+        }
+        cx.notify();
     }
 
     fn set_vad_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {

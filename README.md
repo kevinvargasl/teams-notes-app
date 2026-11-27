@@ -1,24 +1,18 @@
 # Reuniones
 
-Aplicación de escritorio para macOS que graba reuniones de Microsoft Teams en español y permite consultar su audio, transcripción, resumen y marcadores. Desarrollada con Rust y GPUI Kit.
+Reuniones graba el micrófono y el audio de Microsoft Teams en macOS. Transcribe en español en tu Mac y te permite saltar a la grabación desde el texto, un resumen o un marcador.
 
-## Requisitos
+[Descargar Reuniones 0.1.3 para Apple Silicon](https://github.com/kevinvargasl/teams-notes-app/releases/download/0.1.3/Reuniones-0.1.3-macos-arm64.zip)
 
-- macOS 14.2 o posterior y Microsoft Teams de escritorio.
-- Rust, Cargo, herramientas de línea de comandos de Xcode y CMake para compilar.
-- Permisos de micrófono y captura de audio del sistema.
-- Para generar resúmenes y marcadores con IA: CLI de Codex, GitHub Copilot o Claude Code instalada y con sesión iniciada.
-
-La captura funciona con Teams de escritorio, no con Teams en el navegador ni con otras aplicaciones.
+![Reuniones con la biblioteca, el reproductor y una transcripción con tiempos](assets/screenshots/transcripcion.png)
 
 ## Descargar e instalar
 
-El ejecutable de la [versión 0.1.2](https://github.com/kevinvargasl/teams-notes-app/releases/tag/0.1.2) es para Macs con Apple Silicon (M1 o posterior). No requiere Rust, Cargo ni herramientas de compilación.
+El ZIP requiere un Mac con Apple Silicon (M1 o posterior) y macOS 14.2 o posterior. Para grabar, usa Microsoft Teams de escritorio.
 
-1. Descarga `Reuniones-0.1.2-macos-arm64.zip` desde los archivos de la release.
-2. Descomprime el ZIP y mueve `Reuniones.app` a **Aplicaciones**.
-3. Abre la app. Esta versión tiene firma local y no está notarizada por Apple.
-4. Si macOS bloquea la apertura por no verificar al desarrollador, ve a **Configuración del Sistema → Privacidad y seguridad**, pulsa **Abrir de todos modos** (o **Abrir igualmente**) y confirma con **Abrir**.
+1. Descomprime el ZIP y mueve `Reuniones.app` a **Aplicaciones**.
+2. Abre la app. Esta versión tiene firma local y no está notarizada por Apple.
+3. Si macOS bloquea la apertura, ve a **Configuración del Sistema → Privacidad y seguridad**, pulsa **Abrir de todos modos** (o **Abrir igualmente**) y confirma con **Abrir**.
 
 Después de autorizarla, macOS guarda la app como excepción para las siguientes aperturas. [Instrucciones de Apple](https://support.apple.com/es-lamr/102445).
 
@@ -31,31 +25,32 @@ Al iniciar la primera grabación, permite el acceso al micrófono y al audio del
 
 Si macOS pide cerrar y volver a abrir la app para aplicar un permiso, hazlo antes de grabar. [Permisos de micrófono](https://support.apple.com/es-lamr/102071) y [audio del sistema](https://support.apple.com/es-es/guide/mac-help/mchld6aa7d23/mac).
 
-## Compilar y ejecutar
-
-Desde la raíz del repositorio:
-
-```sh
-./scripts/bundle-macos
-open target/Reuniones.app
-```
-
-El script compila en modo release y crea una aplicación firmada localmente. Para compilar en modo de desarrollo, usa `./scripts/bundle-macos --debug`. Si defines `CARGO_TARGET_DIR`, el paquete se genera en ese directorio.
-
-Si Rust está instalado pero la terminal no reconoce `cargo`, carga su entorno:
-
-```sh
-source "$HOME/.cargo/env"
-```
-
 ## Primer uso
 
-1. En **Configuración → Transcripción**, descarga Whisper, de aproximadamente 547 MiB. Si activas la detección de voz, también se descarga Silero VAD, de menos de 1 MiB.
-2. Para usar IA, selecciona tu CLI en **Configuración → Inteligencia artificial** y ajusta las opciones de generación.
-3. Entra a la llamada en Teams, pulsa el botón de grabación y concede los permisos que solicite macOS.
-4. Pulsa **Detener** al terminar. El audio se guarda y la transcripción comienza si los modelos necesarios están instalados.
+1. Entra a la llamada en Teams y pulsa **Grabar** en Reuniones. Concede los permisos que solicite macOS.
+2. Pulsa **Detener** al terminar. La app guarda la grabación y la transcribe si ya están instalados los modelos necesarios.
+3. Puedes descargar Whisper (unos 547 MiB) antes o después de grabar, desde **Configuración → Transcripción**. Para una reunión ya guardada, abre su pestaña **Transcripción** y pulsa **Transcribir** si sigue pendiente. Si activas la detección de voz, descarga también Silero VAD (menos de 1 MiB) desde la misma sección.
+4. Para generar resúmenes o marcadores con IA, instala la CLI de Codex, GitHub Copilot o Claude Code e inicia sesión en ella. Luego selecciónala en **Configuración → Inteligencia artificial**.
 
-La grabación se inicia y se detiene manualmente; la app no detecta el final de la llamada. Mantén la aplicación abierta hasta que termine de transcribir o generar contenido.
+La grabación se inicia y se detiene manualmente. Mantén la aplicación abierta hasta que termine de transcribir o generar contenido.
+
+## Cómo funciona
+
+```mermaid
+flowchart TD
+    subgraph local["En tu Mac"]
+        mic["Micrófono"] --> audio["Dos pistas sincronizadas"]
+        teams["Audio de Teams"] --> audio
+        audio --> playback["Mezcla para reproducir"]
+        audio -->|"VAD desactivado"| whisper["Whisper transcribe cada pista en español"]
+        audio -->|"VAD activado"| vad["Silero detecta los tramos con voz"]
+        vad --> whisper
+        whisper --> transcript["Transcripción con tiempos"]
+    end
+
+    transcript -->|"Solo texto al generar con IA"| provider["Proveedor de IA elegido"]
+    provider --> outputs["Resumen y marcadores en Reuniones"]
+```
 
 ## Funcionalidades
 
@@ -64,7 +59,7 @@ La grabación se inicia y se detiene manualmente; la app no detecta el final de 
 - Captura simultánea del micrófono y del audio de Teams, también con auriculares.
 - Pistas separadas y sincronizadas, más una mezcla para reproducirlas juntas.
 - Pausa, reanudación, contador de tiempo e indicadores de señal.
-- Botón de micrófono junto a pausa y detener, con icono tachado al silenciar. Solo silencia tu voz en la grabación; no cambia el micrófono de macOS ni de Teams.
+- El botón de micrófono silencia tu voz únicamente en la grabación de Reuniones.
 - Avisos si no hay señal o se interrumpe la captura.
 - Guardado del audio pendiente al salir de la aplicación.
 
@@ -72,7 +67,7 @@ Se usa el micrófono predeterminado de macOS. Silenciarte en Teams no detiene la
 
 ### Biblioteca
 
-- Lista con nombre, fecha, hora local de grabación y duración.
+- Lista con nombre, fecha, hora local de grabación y duración. Puedes pulsar la reunión seleccionada para cerrar su detalle.
 - Cambio de nombre y eliminación con confirmación. Eliminar una reunión borra todos sus archivos.
 - Reordenación por arrastrar y soltar; el orden personalizado se conserva entre sesiones.
 - Búsqueda por nombre o contenido de la transcripción, sin distinguir mayúsculas y minúsculas.
@@ -81,16 +76,13 @@ El buscador no filtra resúmenes, marcadores ni fechas. La reordenación se desa
 
 ### Reproducción
 
-- Reproducir, pausar y avanzar o retroceder 15 segundos.
-- Cambiar la posición desde la barra de progreso, con actualización del tiempo durante el arrastre.
+- Reproducir, pausar, avanzar o retroceder 15 segundos y cambiar la posición desde la barra de progreso.
 - Saltar al audio desde un tiempo de la transcripción, una referencia del resumen o un marcador.
 
 ### Transcripción
 
-- Procesamiento local en español con Whisper large-v3-turbo (`q5_0`), mediante `whisper-rs` y `whisper.cpp`.
-- Uso de la GPU del Mac mediante Metal para acelerar el procesamiento.
-- Lectura en párrafos con texto seleccionable, scroll continuo y botón para volver arriba.
-- Tiempos por párrafo para saltar al audio, con opción de ocultarlos.
+- Procesamiento local en español con Whisper large-v3-turbo (`q5_0`) y aceleración mediante la GPU del Mac.
+- Texto seleccionable con tiempos por párrafo que puedes ocultar.
 - Búsqueda con `⌘F`, resaltado de coincidencias y navegación con `Enter` y `Mayús+Enter`.
 - Regeneración desde los audios guardados, con confirmación. La transcripción anterior se conserva si el proceso falla.
 
@@ -122,8 +114,8 @@ La generación con IA requiere una transcripción con diálogo. Si no hay temas 
 - **Instrucciones de generación:** editores independientes para el enfoque y el detalle del resumen y de los marcadores. Permiten guardar, cancelar o restablecer las instrucciones predeterminadas.
 - **Automatizaciones:** resúmenes y marcadores automáticos, activables por separado. Se ejecutan después de guardar y transcribir; si activas ambos, primero se genera el resumen. Al cambiar de herramienta de IA, se desactivan.
 - **Modo de transcripción:** Greedy prioriza la velocidad; Beam Search explora más alternativas y puede tardar más.
-- **Detección de voz (VAD):** Silero detecta los tramos con voz para omitir silencios y conservar los tiempos originales. Puede aumentar el tiempo de transcripción. Es opcional y se puede desactivar aunque el modelo esté descargado.
-- **Archivos:** botón **Abrir en Finder** para acceder a las reuniones guardadas.
+- **Detección de voz (VAD):** desactivada por defecto. Silero detecta los tramos con voz para omitir silencios y conservar los tiempos originales. Puede aumentar el tiempo de transcripción.
+- **Reducir ruido del micrófono:** filtro local de nnnoiseless basado en RNNoise, activado por defecto. El modelo viene incluido y la opción se aplica al micrófono en las próximas grabaciones.
 
 Las preferencias se conservan entre sesiones. Los cambios de instrucciones, modo de transcripción y VAD se aplican a las próximas generaciones, sin modificar los resultados guardados. Restablecer instrucciones cambia el borrador del editor; debes guardar para aplicarlo.
 
@@ -143,7 +135,7 @@ La reordenación por teclado requiere que el buscador esté vacío.
 
 ## Archivos y privacidad
 
-Los datos se guardan en:
+En **Configuración → Grabación y archivos → Abrir en Finder** puedes abrir la carpeta `meetings`.
 
 ```text
 ~/Library/Application Support/Reuniones/
@@ -162,7 +154,22 @@ La grabación y la transcripción se procesan en tu Mac. Una vez descargados los
 
 Para generar resúmenes o marcadores, la app envía al proveedor de IA la transcripción con sus referencias o tiempos. No envía el audio ni extrae los tokens de las CLI.
 
-## Verificaciones de desarrollo
+## Desarrollo
+
+Reuniones está desarrollada con Rust y GPUI Kit y utiliza `whisper-rs` para transcribir. Para compilar, instala Rust con Cargo, las herramientas de línea de comandos de Xcode y CMake.
+
+Desde la raíz del repositorio, ejecuta:
+
+```sh
+./scripts/bundle-macos
+open target/Reuniones.app
+```
+
+El script crea una aplicación firmada localmente. Usa `./scripts/bundle-macos --debug` para compilar en modo de desarrollo. Si defines `CARGO_TARGET_DIR`, el paquete se genera en ese directorio.
+
+Si instalaste Rust con `rustup` y la terminal no encuentra `cargo`, carga su entorno con `source "$HOME/.cargo/env"`.
+
+### Verificaciones
 
 ```sh
 cargo fmt --check
